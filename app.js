@@ -2,7 +2,7 @@
    Alle Daten bleiben lokal auf dem Gerät (localStorage). Kein Netzwerkzugriff außer App-Updates. */
 'use strict';
 (() => {
-  const APP_VERSION = '1.3.0';
+  const APP_VERSION = '1.5.0';
   const STORE_KEY = 'kraftzyklus.v1';
   const CYCLES = 10;
   const BAR = 20;
@@ -79,7 +79,7 @@
       inc: Object.fromEntries(LIFTS.map((l) => [l.id, l.inc])),
       skips: Object.fromEntries(LIFTS.map((l) => [l.id, []])),
       pos: { c: 1, w: 0 }, roundDone: false, log: {},
-      lastBackup: null, backupSnooze: 0, createdAt: Date.now(), lastActive: Date.now()
+      lastBackup: null, backupSnooze: 0, createdAt: Date.now(), lastActive: Date.now(), body: []
     };
   }
   function valid(d) {
@@ -94,6 +94,8 @@
     if (!d.rounds.length) { d.rounds = [newRound(1)]; d.round = 1; }
     d.rounds.forEach((r) => LIFTS.forEach((l) => { if (r.test[l.id] === undefined) r.test[l.id] = null; }));
     d.setup = true;
+    if (!Array.isArray(d.body)) d.body = [];
+    d.body = d.body.filter((b) => b && /^\d{4}-\d{2}-\d{2}$/.test(b.d) && typeof b.kg === 'number').sort((x, y) => (x.d < y.d ? -1 : 1));
     return d;
   }
   function load() {
@@ -111,7 +113,7 @@
   let S = load();
 
   // ---------- UI-Zustand (nicht gespeichert) ----------
-  const V = { tab: 'woche', sub: null, wk: null, lift: null, planC: null, planView: -1, update: 'idle', newVersion: null };
+  const V = { tab: 'woche', sub: null, wk: null, lift: null, planC: null, planView: -1, update: 'idle', changed: [], updError: '' };
 
   // ---------- DOM-Helfer ----------
   const SVGNS = 'http://www.w3.org/2000/svg';
@@ -156,12 +158,32 @@
   }
 
   let toastTimer;
-  function toast(msg) {
+  function toast(msg, undo) {
     document.querySelectorAll('.toast').forEach((t) => t.remove());
-    const t = h('div', { class: 'toast', role: 'status', text: msg });
+    const t = h('div', { class: 'toast', role: 'status' }, h('span', { text: msg }),
+      undo ? h('button', { type: 'button', text: 'Rückgängig', onclick: () => { clearTimeout(toastTimer); t.remove(); undo(); } }) : null);
     document.body.append(t);
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => t.remove(), 2600);
+    toastTimer = setTimeout(() => t.remove(), undo ? 6000 : 2600);
+  }
+  // Zustand merken, um eine Aktion rückgängig machen zu können
+  function snapshot() {
+    const snap = JSON.stringify(S);
+    return () => { S = JSON.parse(snap); save(); V.wk = null; render(); toast('Rückgängig gemacht'); };
+  }
+
+  // Bildschirm bleibt in der Übungsansicht an (sofern iOS es erlaubt)
+  let wakeLock = null, wakeBusy = false;
+  async function setWake(on) {
+    if (!('wakeLock' in navigator) || wakeBusy) return;
+    wakeBusy = true;
+    try {
+      if (on && !wakeLock && document.visibilityState === 'visible') {
+        wakeLock = await navigator.wakeLock.request('screen');
+        wakeLock.addEventListener('release', () => { wakeLock = null; });
+      } else if (!on && wakeLock) { const wl = wakeLock; wakeLock = null; await wl.release(); }
+    } catch (e) { wakeLock = null; }
+    wakeBusy = false;
   }
 
   function sheet(title, build) {
@@ -216,14 +238,17 @@
     else screen = ({ woche: renderWoche, plan: renderPlan, kraft: renderKraft, verlauf: renderVerlauf })[V.tab]();
     app.append(screen);
     app.append(renderTabbar());
+    setWake(V.sub === 'lift');
     if (scrollTop) window.scrollTo(0, 0);
   }
 
   function renderTabbar() {
     const tabs = [['woche', 'Woche', 'week'], ['plan', 'Plan', 'plan'], ['kraft', 'Kraftwerte', 'kraft'], ['verlauf', 'Verlauf', 'verlauf']];
     return h('nav', { class: 'tabbar', 'aria-label': 'Hauptnavigation' }, tabs.map(([id, label, ic]) => {
-      const active = V.tab === id && (!V.sub || (V.sub === 'lift' && id === 'woche') || (V.sub === 'settings' && id === 'plan'));
-      return h('button', { type: 'button', 'aria-current': active ? 'page' : null, onclick: () => go(id) }, icon(ic), label);
+      const active = V.tab === id;
+      const dot = id === 'plan' && V.update === 'available';
+      return h('button', { type: 'button', 'aria-current': active ? 'page' : null, 'aria-label': dot ? label + ', Update verfügbar' : null, onclick: () => go(id) },
+        h('span', { class: dot ? 'has-dot' : null, style: { display: 'inline-flex' } }, icon(ic)), label);
     }));
   }
 
@@ -348,7 +373,8 @@
         'Trag deine Testwerte unter Kraftwerte ein – gern an verschiedenen Tagen.'),
         h('div', { class: 'actions' }, h('button', { class: 'btn primary small', type: 'button', text: 'Zu Kraftwerte', onclick: () => go('kraft') })))));
     else if (isCurrent && !LIFTS.some((l) => entry(pos.c, pos.w, l.id).s) && !backupDue() && vp.w !== 4) kids.push(h('p', { class: 'tiny muted', style: { textAlign: 'center', margin: '-4px 0' }, text: 'Übung antippen, um sie als geschafft einzutragen' }));
-    LIFTS.forEach((l) => kids.push(liftCard(l, vp)));
+    const next = isCurrent ? LIFTS.find((l) => hasTest(l.id) && !entry(pos.c, pos.w, l.id).s) : null;
+    LIFTS.forEach((l) => kids.push(liftCard(l, vp, next === l)));
 
     if (isCurrent) {
       const states = LIFTS.map((l) => entry(pos.c, pos.w, l.id).s);
@@ -363,23 +389,31 @@
       } }, label, n < 4 ? h('span', { class: 'tiny', style: { opacity: '0.7', fontWeight: '500' }, text: '(' + n + ' von 4)' }) : null));
       kids.push(h('button', { class: 'link', type: 'button', style: { alignSelf: 'center' }, onclick: repeatSheet }, icon('repeat', 'i s'), 'Woche wiederholen …'));
     }
-    return h('main', { class: 'screen' }, kids);
+    const main = h('main', { class: 'screen' }, kids);
+    // Wischen nach links/rechts blättert durch die Wochen
+    let sx = 0, sy = 0;
+    main.addEventListener('touchstart', (e) => { sx = e.touches[0].clientX; sy = e.touches[0].clientY; }, { passive: true });
+    main.addEventListener('touchend', (e) => {
+      const dx = e.changedTouches[0].clientX - sx, dy = e.changedTouches[0].clientY - sy;
+      if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 1.8) { if (dx < 0 && canNext) step(1); else if (dx > 0 && canPrev) step(-1); }
+    }, { passive: true });
+    return main;
   }
 
-  function liftCard(l, vp) {
+  function liftCard(l, vp, isNext) {
     const t = target(l.id, vp.c, vp.w);
     const e = entry(vp.c, vp.w, l.id);
     const pl = plates(t.kg);
     const skipped = vp.c > 1 && S.skips[l.id].includes(vp.c);
     const state = e.s === 'ok' ? 'Geschafft' : e.s === 'miss' ? 'Nicht geschafft' : 'Offen';
-    return h('button', { class: 'lift' + (e.s === 'ok' ? ' is-ok' : e.s === 'miss' ? ' is-miss' : ''), type: 'button',
+    return h('button', { class: 'lift' + (e.s === 'ok' ? ' is-ok' : e.s === 'miss' ? ' is-miss' : isNext ? ' is-next' : ''), type: 'button',
       'aria-label': l.name + ', ' + fmt(t.kg) + ' kg, ' + t.scheme + ', ' + state + (e.note ? ', mit Notiz' : ''),
-      onclick: () => openSub('lift', { lift: { id: l.id, c: vp.c, w: vp.w } }) },
+      onclick: () => openSub('lift', { lift: { id: l.id, c: vp.c, w: vp.w, from: 'woche' } }) },
       h('span', { class: 'lift-top' },
         h('span', { class: 'lift-name' }, l.name, icon('chevR', 'i s')),
         h('span', { class: 'row', style: { gap: '10px' } },
           e.note ? h('span', { class: 'note-tag' }, icon('note', 'i s')) : null,
-          e.s ? h('span', { class: 'badge ' + e.s }, icon(e.s === 'ok' ? 'check' : 'x', 'i s'), state) : null)),
+          e.s ? h('span', { class: 'badge ' + e.s }, icon(e.s === 'ok' ? 'check' : 'x', 'i s'), state) : isNext ? h('span', { class: 'badge next', text: 'Als Nächstes' }) : null)),
       h('span', { class: 'lift-main' },
         h('span', { class: 'col', style: { gap: '3px' } },
           h('span', { class: 'row', style: { alignItems: 'baseline', gap: '12px' } },
@@ -396,15 +430,16 @@
 
   function finishWeek() {
     const { c, w } = S.pos;
+    const undo = snapshot();
     S.lastActive = Date.now();
-    if (w < 4) { S.pos = { c, w: w + 1 }; save(); V.wk = null; render(true); toast(weekName(w) + ' abgeschlossen'); return; }
+    if (w < 4) { S.pos = { c, w: w + 1 }; save(); V.wk = null; render(true); toast(weekName(w) + ' abgeschlossen', undo); return; }
     // Zyklusende: verpasste Einheiten prüfen
     const flagged = LIFTS.map((l) => ({ l, miss: [0, 1, 2, 3].filter((wk) => entry(c, wk, l.id).s !== 'ok').length })).filter((x) => x.miss >= MISS_LIMIT);
     const advance = (skipIds) => {
       if (c === CYCLES) { S.roundDone = true; cur().finished = Date.now(); }
       else { skipIds.forEach((id) => { if (!S.skips[id].includes(c + 1)) S.skips[id].push(c + 1); }); S.pos = { c: c + 1, w: 0 }; }
       save(); V.wk = null; render(true);
-      if (c < CYCLES) toast('Zyklus ' + c + ' abgeschlossen' + (skipIds.length ? '' : ' – die Gewichte steigen'));
+      toast(c < CYCLES ? 'Zyklus ' + c + ' abgeschlossen' + (skipIds.length ? '' : ' – die Gewichte steigen') : 'Runde abgeschlossen', undo);
     };
     if (!flagged.length || c === CYCLES) { advance([]); return; }
     const picks = Object.fromEntries(flagged.map((x) => [x.l.id, true]));
@@ -424,13 +459,15 @@
     sheet('Woche wiederholen', (close) => h('div', { class: 'stack' },
       h('p', { class: 'muted small', text: 'Krank, Urlaub oder einfach eine Woche verpasst? Wiederhole eine Woche, ohne dass der Plan durcheinanderkommt. Notizen bleiben erhalten.' }),
       h('button', { class: 'btn ghost block', type: 'button', onclick: () => {
-        LIFTS.forEach((l) => setEntry(c, w, l.id, { s: null })); save(); close(); render(); toast(weekName(w) + ' neu begonnen');
+        const undo = snapshot();
+        LIFTS.forEach((l) => setEntry(c, w, l.id, { s: null })); save(); close(); render(); toast(weekName(w) + ' neu begonnen', undo);
       } }, 'Diese Woche neu beginnen'),
       hasPrev ? h('button', { class: 'btn ghost block', type: 'button', onclick: () => {
+        const undo = snapshot();
         let pc = c, pw = w - 1;
         if (pw < 0) { pw = 4; pc = c - 1; LIFTS.forEach((l) => { S.skips[l.id] = S.skips[l.id].filter((k) => k !== c); }); }
         LIFTS.forEach((l) => { setEntry(c, w, l.id, { s: null }); setEntry(pc, pw, l.id, { s: null }); });
-        S.pos = { c: pc, w: pw }; save(); close(); V.wk = null; render(true); toast('Zurück zu Zyklus ' + pc + ' · ' + weekShort(pw));
+        S.pos = { c: pc, w: pw }; save(); close(); V.wk = null; render(true); toast('Zurück zu Zyklus ' + pc + ' · ' + weekShort(pw), undo);
       } }, 'Vorherige Woche nochmal machen') : null,
       h('button', { class: 'btn danger block', type: 'button', text: 'Abbrechen', onclick: close })));
   }
@@ -454,7 +491,12 @@
     const l = LIFT[id];
     const t = target(id, c, w);
     const pl = plates(t.kg);
-    const editable = cmpPos({ c, w }, S.pos) === 0 && !S.roundDone;
+    const rel = S.roundDone ? -1 : cmpPos({ c, w }, S.pos);
+    const editable = rel <= 0;
+    const idx = LIFTS.findIndex((x) => x.id === id);
+    const prevL = LIFTS[idx - 1], nextL = LIFTS[idx + 1];
+    const switchTo = (nid) => { V.lift = Object.assign({}, V.lift, { id: nid }); render(true); };
+    const notes = allNotes(id).filter((n) => !(n.r === S.round && n.c === c && n.w === w));
     const e = entry(c, w, id);
     const prev = lastNote(id, c, w);
     const setS = (s) => { setEntry(c, w, id, { s: entry(c, w, id).s === s ? null : s }); S.lastActive = Date.now(); save(); render(); };
@@ -481,7 +523,7 @@
 
     const warm = hasTest(id) ? warmups(t.kg) : [];
     return h('main', { class: 'screen' },
-      h('button', { class: 'link', type: 'button', style: { alignSelf: 'flex-start' }, onclick: closeSub }, icon('chevL', 'i s'), weekShort(w)),
+      h('button', { class: 'link', type: 'button', style: { alignSelf: 'flex-start' }, onclick: closeSub }, icon('chevL', 'i s'), V.lift.from === 'plan' ? 'Plan' : weekShort(w)),
       h('div', { class: 'col', style: { gap: '2px' } },
         h('span', { class: 'small muted', text: l.name + ' · Zyklus ' + c + ' · ' + weekShort(w) }),
         h('div', { class: 'row', style: { alignItems: 'baseline', gap: '14px' } },
@@ -490,7 +532,7 @@
       fig,
       warm.length ? [h('div', { class: 'label', text: 'Aufwärmen' }),
         h('div', { class: 'warm' }, warm.map(([kg, r]) => h('div', null, h('span', { class: 'num', style: { fontSize: '24px' }, text: kg === BAR ? 'Stange' : fmt(kg) + ' kg' }), h('span', { class: 'muted small', text: '× ' + r }))))] : null,
-      editable ? [h('div', { class: 'label', text: 'Ergebnis' }), h('div', { class: 'status big' },
+      editable ? [h('div', { class: 'label', text: rel < 0 ? 'Ergebnis · nachträglich ändern' : 'Ergebnis' }), h('div', { class: 'status big' },
         h('button', { class: 'ok', type: 'button', 'aria-pressed': String(e.s === 'ok'), onclick: () => setS('ok') }, icon('check'), 'Geschafft'),
         h('button', { class: 'miss', type: 'button', 'aria-pressed': String(e.s === 'miss'), onclick: () => setS('miss') }, icon('x'), 'Nicht geschafft'))] : null,
       prev ? [h('div', { class: 'label', text: 'Notiz vom letzten Mal' }),
@@ -499,8 +541,25 @@
       h('div', { class: 'label', text: 'Notiz für diese Woche' }),
       ta,
       h('div', { class: 'quick' }, quick),
-      h('p', { class: 'tiny muted', text: 'Wird automatisch gespeichert und beim nächsten ' + l.name + ' wieder angezeigt.' })
+      h('p', { class: 'tiny muted', text: 'Wird automatisch gespeichert und beim nächsten ' + l.name + ' wieder angezeigt.' }),
+      notes.length > 1 ? h('details', { class: 'notes' },
+        h('summary', null, 'Alle Notizen zu ' + l.name + ' (' + notes.length + ')'),
+        notes.map((n) => h('div', { class: 'note-item' },
+          h('span', { class: 'tiny muted', text: (n.r !== S.round ? 'Runde ' + n.r + ' · ' : '') + 'Zyklus ' + n.c + ' · ' + weekShort(n.w) }),
+          h('span', { class: 'small', text: n.note })))) : null,
+      h('div', { class: 'pager' },
+        prevL ? h('button', { class: 'btn ghost small', type: 'button', onclick: () => switchTo(prevL.id) }, icon('chevL', 'i s'), prevL.name) : h('span'),
+        nextL ? h('button', { class: 'btn ghost small right', type: 'button', onclick: () => switchTo(nextL.id) }, nextL.name, icon('chevR', 'i s')) : h('span'))
     );
+  }
+
+  function allNotes(id) {
+    const out = [];
+    for (let r = S.round; r >= 1; r--) for (let c = CYCLES; c >= 1; c--) for (let w = 4; w >= 0; w--) {
+      const e = entry(c, w, id, r);
+      if (e.note) out.push({ note: e.note, c, w, r });
+    }
+    return out;
   }
 
   // ---------- Plan ----------
@@ -514,20 +573,22 @@
       body.push(h('div', { class: 'matrix-head' }, h('span'), LIFTS.map((l) => h('span', null, l.short, h('br'), fmt(orm(l.id, c)) + ' kg'))));
       [0, 1, 2, 3, 4].forEach((w) => body.push(h('div', { class: 'matrix-row' + (w === nowW ? ' now' : '') },
         h('span', { class: 'wl', text: w === 4 ? 'Deload' : 'W' + (w + 1) }),
-        LIFTS.map((l) => { const t = target(l.id, c, w); return h('div', { class: 'cell' }, h('span', { class: 'num', text: fmt(t.kg) }), h('span', { class: 'tiny', text: t.scheme })); }))));
+        LIFTS.map((l) => { const t = target(l.id, c, w); const st = entry(c, w, l.id).s;
+          return h('button', { class: 'cell' + (st ? ' is-' + st : ''), type: 'button', 'aria-label': l.name + ', ' + weekShort(w) + ': ' + fmt(t.kg) + ' kg, ' + t.scheme + (st === 'ok' ? ', geschafft' : st === 'miss' ? ', nicht geschafft' : ''),
+            onclick: () => openSub('lift', { lift: { id: l.id, c, w, from: 'plan' } }) }, h('span', { class: 'num', text: fmt(t.kg) }), h('span', { class: 'tiny', text: t.scheme })); }))));
     } else {
       const l = LIFTS[view];
       const skipped = c > 1 && S.skips[l.id].includes(c);
       body.push(h('div', { class: 'card row between' },
         h('div', { class: 'col', style: { gap: '2px' } }, h('span', { class: 'small muted', text: l.name + ' · Maximalkraft' }), h('span', { class: 'num', style: { fontSize: '34px' }, text: fmt(orm(l.id, c)) + ' kg' })),
         h('span', { class: 'tiny', style: { textAlign: 'right', color: skipped ? 'var(--warn)' : 'var(--muted)' } }, skipped ? 'Steigerung' : '+' + fmt(S.inc[l.id]) + ' kg', h('br'), skipped ? 'ausgesetzt' : 'pro Zyklus')));
-      [0, 1, 2, 3, 4].forEach((w) => { const t = target(l.id, c, w); body.push(h('div', { class: 'wk-row' + (w === nowW ? ' now' : '') },
+      [0, 1, 2, 3, 4].forEach((w) => { const t = target(l.id, c, w); const st = entry(c, w, l.id).s; body.push(h('button', { class: 'wk-row' + (w === nowW ? ' now' : '') + (st ? ' is-' + st : ''), type: 'button',
+        onclick: () => openSub('lift', { lift: { id: l.id, c, w, from: 'plan' } }) },
         h('strong', { text: weekShort(w) }), h('span', { class: 'muted', text: t.pct + ' %' }), h('span', { text: t.scheme }), h('span', { class: 'num', text: fmt(t.kg) + ' kg' }))); });
     }
     return h('main', { class: 'screen' },
       h('div', { class: 'row between' }, h('h1', { text: 'Plan' }),
-        h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Einstellungen', onclick: () => openSub('settings') }, icon('gear'),
-          V.update === 'available' ? h('span', { class: 'sr', text: 'Update verfügbar' }) : null)),
+        h('button', { class: 'icon-btn' + (V.update === 'available' ? ' has-dot' : ''), type: 'button', 'aria-label': V.update === 'available' ? 'Einstellungen, Update verfügbar' : 'Einstellungen', onclick: () => openSub('settings') }, icon('gear'))),
       h('div', { class: 'card row', style: { padding: '4px' } },
         h('button', { class: 'icon-btn flat', type: 'button', 'aria-label': 'Vorheriger Zyklus', disabled: c <= 1, onclick: () => { V.planC = c - 1; render(); } }, icon('chevL')),
         h('div', { class: 'grow col center', style: { gap: '0' } }, h('span', { class: 'num', style: { fontSize: '24px' }, text: 'Zyklus ' + c }),
@@ -535,7 +596,7 @@
         h('button', { class: 'icon-btn flat', type: 'button', 'aria-label': 'Nächster Zyklus', disabled: c >= CYCLES, onclick: () => { V.planC = c + 1; render(); } }, icon('chevR'))),
       h('div', { class: 'seg', role: 'group', 'aria-label': 'Ansicht' }, tabs.map((t) => h('button', { type: 'button', 'aria-pressed': String(view === t.v), text: t.label, onclick: () => { V.planView = t.v; render(); } }))),
       h('div', { class: 'col', style: { gap: '6px' } }, body),
-      h('p', { class: 'tiny muted', text: 'Alle Gewichte auf 2,5 kg gerundet. Die aktuelle Woche ist markiert.' }));
+      h('p', { class: 'tiny muted', text: 'Gewichte auf 2,5 kg gerundet. Aktuelle Woche umrandet, grün/rot = geschafft/nicht geschafft. Antippen öffnet die Übung.' }));
   }
 
   // ---------- Kraftwerte ----------
@@ -562,6 +623,100 @@
       }),
       h('button', { class: 'btn ' + (S.roundDone ? 'primary' : 'ghost') + ' block', type: 'button', onclick: startNewRound }, 'Neue Runde starten'),
       h('p', { class: 'tiny muted', text: 'Steigerung = kg pro Zyklus. Formel wie in deiner Tabelle: 1RM = Gewicht + Gewicht × Wdh. × 0,033, gerundet auf 2,5 kg.' }));
+  }
+
+  // ---------- Körpergewicht ----------
+  const isoDay = (t) => { const d = new Date(t); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+  const dayTime = (d) => new Date(d + 'T12:00:00').getTime();
+  const dayDE = (d) => { const t = dayTime(d); return d === isoDay(Date.now()) ? 'heute' : d === isoDay(Date.now() - DAY) ? 'gestern' : new Date(t).toLocaleDateString('de-DE', { day: 'numeric', month: 'short' }); };
+  const latestBody = () => (S.body.length ? S.body[S.body.length - 1] : null);
+  function bodyAt(daysBack) {
+    const lim = isoDay(Date.now() - daysBack * DAY);
+    for (let i = S.body.length - 1; i >= 0; i--) if (S.body[i].d <= lim) return S.body[i];
+    return null;
+  }
+  function bodySheet() {
+    const last = latestBody();
+    sheet('Körpergewicht eintragen', (close) => {
+      const kgIn = h('input', { type: 'text', inputmode: 'decimal', autocomplete: 'off', 'aria-label': 'Körpergewicht in kg', placeholder: last ? fmt(last.kg) : '0', style: { width: '96px' } });
+      const dIn = h('input', { type: 'date', class: 'date', 'aria-label': 'Datum', value: isoDay(Date.now()), max: isoDay(Date.now()) });
+      const err = h('p', { class: 'hint-warn', hidden: true });
+      const saveBtn = h('button', { class: 'btn primary', type: 'button', text: 'Speichern', disabled: true });
+      const ok = () => { const v = parseNum(kgIn.value); return v >= 30 && v <= 300 && /^\d{4}-\d{2}-\d{2}$/.test(dIn.value) && dIn.value <= isoDay(Date.now()); };
+      const upd = () => { saveBtn.disabled = !ok(); };
+      kgIn.addEventListener('input', upd); dIn.addEventListener('input', upd); dIn.addEventListener('change', upd);
+      saveBtn.addEventListener('click', () => {
+        if (!ok()) { err.textContent = 'Bitte ein Gewicht zwischen 30 und 300 kg und ein Datum bis heute eingeben.'; err.hidden = false; return; }
+        const undo = snapshot();
+        const kg = Math.round(parseNum(kgIn.value) * 10) / 10;
+        S.body = S.body.filter((b) => b.d !== dIn.value).concat([{ d: dIn.value, kg }]).sort((x, y) => (x.d < y.d ? -1 : 1));
+        save(); close(); render(); toast(fmt(kg) + ' kg eingetragen', undo);
+      });
+      return h('div', { class: 'stack' },
+        h('p', { class: 'muted small', text: 'Am aussagekräftigsten: einmal pro Woche, morgens nüchtern, gleiche Waage.' }),
+        h('div', { class: 'row', style: { gap: '10px', flexWrap: 'wrap' } },
+          h('label', { class: 'field' }, kgIn, 'kg'),
+          h('label', { class: 'field grow', style: { justifyContent: 'flex-end' } }, 'am', dIn)),
+        err,
+        h('div', { class: 'btns' }, h('button', { class: 'btn ghost', type: 'button', text: 'Abbrechen', onclick: close }), saveBtn));
+    });
+  }
+  function deltaChip(label, now, then) {
+    if (!then) return null;
+    const d = Math.round((now.kg - then.kg) * 10) / 10;
+    return h('span', { class: 'col', style: { gap: '0' } }, h('span', { class: 'tiny muted', text: label }),
+      h('span', { class: 'num', style: { fontSize: '18px', color: d > 0 ? 'var(--text)' : d < 0 ? 'var(--text)' : 'var(--muted)' }, text: (d > 0 ? '+' : d < 0 ? '−' : '±') + fmt(Math.abs(d)) + ' kg' }));
+  }
+  function bodyChart() {
+    const pts = S.body.filter((b) => dayTime(b.d) >= Date.now() - 182 * DAY);
+    if (!pts.length) return null;
+    const W = 320, H = 110, L = 32, R = 312, T = 10, B = 88;
+    const vs = pts.map((p) => p.kg);
+    let lo = Math.floor(Math.min(...vs) - 1), hi = Math.ceil(Math.max(...vs) + 1);
+    if (hi - lo < 4) { const m = (hi + lo) / 2; lo = Math.floor(m - 2); hi = Math.ceil(m + 2); }
+    const t0 = dayTime(pts[0].d), t1 = dayTime(pts[pts.length - 1].d);
+    const x = (d) => (t1 === t0 ? (L + R) / 2 : L + (dayTime(d) - t0) / (t1 - t0) * (R - L));
+    const y = (v) => B - (v - lo) / (hi - lo) * (B - T);
+    const short = (d) => new Date(dayTime(d)).toLocaleDateString('de-DE', { day: 'numeric', month: 'numeric' });
+    return h('svg:svg', { class: 'chart', viewBox: '0 0 ' + W + ' ' + H, role: 'img', 'aria-label': 'Körpergewicht von ' + fmt(pts[0].kg) + ' auf ' + fmt(pts[pts.length - 1].kg) + ' kg' },
+      [lo, hi].map((v) => [h('svg:line', { x1: L, x2: R, y1: y(v), y2: y(v), stroke: '#2A2E33' }), h('svg:text', { x: 0, y: y(v) + 4, fill: '#A3A9AF', 'font-size': '10' }, String(v))]),
+      pts.length > 1 ? h('svg:polyline', { points: pts.map((p) => x(p.d).toFixed(1) + ',' + y(p.kg).toFixed(1)).join(' '), fill: 'none', stroke: '#ECEDEE', 'stroke-width': '2.5', 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }) : null,
+      pts.map((p, i) => h('svg:circle', { cx: x(p.d), cy: y(p.kg), r: i === pts.length - 1 ? '4.5' : '2.5', fill: i === pts.length - 1 ? '#1C1F23' : '#ECEDEE', stroke: '#ECEDEE', 'stroke-width': '2' })),
+      h('svg:text', { x: L, y: H - 4, fill: '#A3A9AF', 'font-size': '10' }, short(pts[0].d)),
+      pts.length > 1 ? h('svg:text', { x: R, y: H - 4, fill: '#A3A9AF', 'font-size': '10', 'text-anchor': 'end' }, short(pts[pts.length - 1].d)) : null);
+  }
+  function renderBodyCard() {
+    const last = latestBody();
+    const head = h('div', { class: 'row between' }, h('strong', { text: 'Körpergewicht' }),
+      h('button', { class: 'btn primary small', type: 'button', style: { minHeight: '36px', padding: '0 12px' }, onclick: bodySheet }, '+ Eintragen'));
+    if (!last) return h('section', { class: 'card col', style: { gap: '10px' }, 'aria-label': 'Körpergewicht' }, head,
+      h('p', { class: 'small muted', text: 'Trag dein Gewicht z. B. einmal pro Woche ein. Dann siehst du hier deinen Verlauf und bei jeder Übung deine relative Kraft (Maximalkraft geteilt durch Körpergewicht).' }));
+    const startD = isoDay(cur().date);
+    const roundStart = S.body.find((b) => b.d >= startD) || null;
+    const days = Math.round((Date.now() - dayTime(last.d)) / DAY);
+    const list = S.body.slice().reverse();
+    return h('section', { class: 'card col', style: { gap: '10px' }, 'aria-label': 'Körpergewicht' }, head,
+      h('div', { class: 'row', style: { gap: '20px', alignItems: 'flex-end', flexWrap: 'wrap' } },
+        h('span', { class: 'col', style: { gap: '0' } }, h('span', { class: 'tiny muted', text: dayDE(last.d) }),
+          h('span', null, h('span', { class: 'num', style: { fontSize: '34px' }, text: fmt(last.kg) }), h('span', { class: 'small muted', text: ' kg' }))),
+        deltaChip('4 Wochen', last, (() => { const b = bodyAt(28); return b && b !== last ? b : null; })()),
+        deltaChip('seit Rundenstart', last, roundStart && roundStart !== last ? roundStart : null)),
+      bodyChart(),
+      days >= 7 ? h('p', { class: 'tiny', style: { color: 'var(--warn)' }, text: 'Letzter Eintrag vor ' + days + ' Tagen – Zeit für ein Update.' }) : null,
+      h('details', { class: 'notes', style: { background: 'var(--bg)' } },
+        h('summary', null, 'Alle Einträge (' + S.body.length + ')'),
+        list.map((b) => h('div', { class: 'list-row', style: { minHeight: '44px', borderTop: '1px solid var(--line)', borderBottom: 'none' } },
+          h('span', { class: 'grow small', text: new Date(dayTime(b.d)).toLocaleDateString('de-DE', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }) }),
+          h('strong', { class: 'small', text: fmt(b.kg) + ' kg' }),
+          h('button', { class: 'icon-btn flat', type: 'button', 'aria-label': 'Eintrag vom ' + dayDE(b.d) + ' löschen', style: { width: '40px', height: '40px', color: 'var(--muted)' }, onclick: () => {
+            const undo = snapshot(); S.body = S.body.filter((x) => x !== b); save(); render(); toast('Eintrag gelöscht', undo);
+          } }, icon('x', 'i s'))))));
+  }
+  function relLine(id, ormNow) {
+    const last = latestBody();
+    if (!last || !ormNow) return null;
+    return h('div', { class: 'row between tiny muted' }, h('span', { text: 'Relative Kraft' }),
+      h('strong', { style: { color: 'var(--text)' }, text: fmt(Math.round(ormNow / last.kg * 100) / 100) + ' × Körpergewicht' }));
   }
 
   // ---------- Verlauf ----------
@@ -601,6 +756,19 @@
       ist.pts.map((p) => h('svg:circle', { cx: x(p.c), cy: y(p.v), r: p === lastP ? '5' : '3', fill: p === lastP ? '#1C1F23' : l.color, stroke: l.color, 'stroke-width': '2.5' })));
   }
 
+  function quotaLine(id) {
+    let ok = 0, tot = 0;
+    for (let c = 1; c <= CYCLES; c++) for (let w = 0; w < 5; w++) {
+      if (!S.roundDone && cmpPos({ c, w }, S.pos) >= 0) continue;
+      tot++; if (entry(c, w, id).s === 'ok') ok++;
+    }
+    if (!tot) return null;
+    const p = Math.round(ok / tot * 100);
+    return h('div', { class: 'row between tiny muted', style: { marginTop: '2px' } },
+      h('span', { text: 'Geschafft: ' + ok + ' von ' + tot + ' Wochen' }),
+      h('span', { class: 'quota' }, h('span', { class: 'quota-bar' }, h('span', { style: { width: p + '%' } })), p + ' %'));
+  }
+
   function renderVerlauf() {
     const done = S.roundDone ? 50 : (S.pos.c - 1) * 5 + S.pos.w;
     const pct = Math.round(done / 50 * 100);
@@ -610,6 +778,8 @@
       h('div', { class: 'card col', style: { gap: '8px' } },
         h('div', { class: 'row between small' }, h('strong', { text: S.roundDone ? 'Runde ' + S.round + ' abgeschlossen' : 'Runde ' + S.round + ' · Zyklus ' + S.pos.c + ' · ' + weekShort(S.pos.w) }), h('span', { class: 'muted', text: done + ' / 50 Wochen' })),
         h('div', { class: 'progress', role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': '50', 'aria-valuenow': String(done), 'aria-label': 'Fortschritt der Runde' }, h('div', { style: { width: pct + '%' } }))),
+      renderBodyCard(),
+      h('div', { class: 'label', text: 'Kraft pro Übung' }),
       h('div', { class: 'legend' },
         h('span', { class: 'row', style: { gap: '6px' } }, h('span', { class: 'lg-plan' }), 'Plan'),
         h('span', { class: 'row', style: { gap: '6px' } }, h('span', { class: 'lg-ist' }), 'Ist'),
@@ -630,7 +800,7 @@
             h('span', null, h('span', { class: 'tiny muted', text: 'Ist ' }), h('span', { class: 'num', style: { fontSize: '26px', color: l.color }, text: fmt(ist.now) }), h('span', { class: 'tiny muted', text: ' kg' })),
             h('span', null, h('span', { class: 'tiny muted', text: 'Plan ' }), h('span', { class: 'num', style: { fontSize: '20px' }, text: fmt(planNow) }), h('span', { class: 'tiny muted', text: ' kg' })),
             h('span', { class: 'grow', style: { textAlign: 'right' } }, h('span', { class: 'tiny muted', text: 'Ziel Z10 ' }), h('span', { class: 'num', style: { fontSize: '20px' }, text: fmt(planVal(l.id, CYCLES)) }))),
-          liftChart(l, ist));
+          liftChart(l, ist), quotaLine(l.id), relLine(l.id, ist.now));
       }),
       h('p', { class: 'tiny muted', text: 'Ist = Maximalkraft, mit der du einen Zyklus erfolgreich trainiert hast (mind. 3 von 4 Wochen geschafft). Startwert ist dein Test. Plan = Test + Steigerung pro Zyklus.' }),
       h('div', { class: 'label', text: 'Deine Tests' }),
@@ -648,9 +818,36 @@
   }
 
   // ---------- Einstellungen ----------
-  function renderSettings() {
+  function renderUpdateCard() {
     const controlled = 'serviceWorker' in navigator && !!navigator.serviceWorker.controller;
-    const upLabel = { idle: '', checking: 'wird geprüft …', latest: 'aktuell', offline: 'offline', error: 'fehlgeschlagen', available: 'installieren' }[V.update];
+    const info = updInfo();
+    const ago = (t) => { const m = Math.round((Date.now() - t) / 60000); return m < 1 ? 'gerade eben' : m < 60 ? 'vor ' + m + ' Min.' : m < 1440 ? 'vor ' + Math.round(m / 60) + ' Std.' : 'am ' + dateDE(t); };
+    const st = V.update;
+    const status = {
+      idle: [info.checked ? 'Zuletzt geprüft ' + ago(info.checked) : 'Noch nicht geprüft', 'muted'],
+      checking: ['Vergleiche App-Dateien mit dem Server …', 'muted'],
+      latest: ['Du hast die neueste Version.', 'good'],
+      available: ['Update verfügbar' + (V.changed && V.changed.length ? ': ' + V.changed.join(', ') : ''), 'accent'],
+      installing: ['Wird installiert – die App startet gleich neu …', 'muted'],
+      offline: ['Keine Internetverbindung. Updates gehen nur online.', 'warn'],
+      nocache: ['Offline-Speicher ist noch nicht eingerichtet. Schließe die App einmal komplett und öffne sie neu – oder lade die App-Dateien unten neu.', 'warn'],
+      error: ['Prüfung fehlgeschlagen' + (V.updError ? ' (' + V.updError + ')' : '') + '. Versuch es später nochmal oder lade die App-Dateien neu.', 'warn']
+    }[st] || ['', 'muted'];
+    const color = { muted: 'var(--muted)', good: 'var(--good)', accent: 'var(--accent)', warn: 'var(--warn)' }[status[1]];
+    const busy = st === 'checking' || st === 'installing';
+    return h('div', { class: 'card col', style: { gap: '12px' } },
+      h('div', { class: 'row between' },
+        h('span', { class: 'col', style: { gap: '2px' } }, h('strong', { text: 'Version ' + APP_VERSION }),
+          h('span', { class: 'tiny muted', text: (info.updated ? 'Aktualisiert ' + ago(info.updated) + ' · ' : '') + (controlled ? 'offline verfügbar' : 'offline nach Neustart') })),
+        controlled ? h('span', { class: 'badge ok' }, icon('check', 'i s'), 'Offline') : null),
+      h('p', { class: 'small', style: { color }, role: 'status', text: status[0] }),
+      st === 'available'
+        ? h('button', { class: 'btn primary block', type: 'button', onclick: applyUpdate }, icon('refresh', 'i s'), 'Update installieren')
+        : h('button', { class: 'btn ghost block', type: 'button', disabled: busy, onclick: () => checkUpdate(false) }, icon('refresh', 'i s'), busy ? (st === 'checking' ? 'Wird geprüft …' : 'Wird installiert …') : 'Nach Updates suchen'),
+      h('button', { class: 'link', type: 'button', style: { alignSelf: 'center', fontSize: '13px', color: 'var(--muted)' }, disabled: busy, onclick: repairApp }, 'Probleme? App-Dateien neu laden'));
+  }
+
+  function renderSettings() {
     return h('main', { class: 'screen' },
       h('button', { class: 'link', type: 'button', style: { alignSelf: 'flex-start' }, onclick: closeSub }, icon('chevL', 'i s'), 'Plan'),
       h('h1', { text: 'Einstellungen' }),
@@ -660,13 +857,7 @@
         h('button', { class: 'list-row', type: 'button', onclick: startImport }, h('span', { class: 'accent' }, icon('up')), h('span', { class: 'grow', text: 'Backup importieren' }), icon('chevR', 'i s'))),
       h('p', { class: 'tiny muted', style: { padding: '0 4px' }, text: 'Letztes Backup: ' + (S.lastBackup ? dateDE(S.lastBackup) + ' (vor ' + daysAgo(S.lastBackup) + ' Tagen)' : 'noch keins') + ' · Daten liegen nur auf diesem Gerät.' }),
       h('div', { class: 'label', text: 'App' }),
-      h('div', { class: 'card tight' },
-        h('div', { class: 'list-row' }, h('span', { class: 'grow', text: 'Version' }), h('span', { class: 'muted', text: APP_VERSION })),
-        h('div', { class: 'list-row' }, h('span', { class: 'grow', text: 'Offline verfügbar' }),
-          h('span', { class: 'row small', style: { gap: '4px', color: controlled ? 'var(--accent)' : 'var(--muted)', fontWeight: '600' } }, controlled ? [icon('check', 'i s'), 'Ja'] : 'nach Neustart')),
-        V.update === 'available'
-          ? h('button', { class: 'list-row', type: 'button', onclick: applyUpdate }, h('span', { class: 'accent' }, icon('refresh')), h('span', { class: 'grow', text: 'Update' + (V.newVersion ? ' auf ' + V.newVersion : '') + ' installieren' }), h('span', { class: 'tiny accent', text: 'neu' }))
-          : h('button', { class: 'list-row', type: 'button', disabled: V.update === 'checking', onclick: checkUpdate }, h('span', { class: 'accent' }, icon('refresh')), h('span', { class: 'grow', text: 'Version aktualisieren' }), h('span', { class: 'tiny muted', text: upLabel }))),
+      renderUpdateCard(),
       h('div', { class: 'label', text: 'Gefahrenzone' }),
       h('div', { class: 'card tight' }, h('button', { class: 'btn danger block', type: 'button', text: 'Alle Daten löschen', onclick: async () => {
         if (!(await confirmSheet('Alle Daten löschen?', 'Testwerte, Plan-Fortschritt und Notizen werden von diesem Gerät gelöscht. Das lässt sich nur mit einem Backup rückgängig machen.', 'Endgültig löschen', true))) return;
@@ -783,44 +974,149 @@
   }
 
   // ---------- Offline & Updates ----------
-  let swReg = null, reloading = false;
+  // Prinzip: Die App vergleicht ihre gespeicherten Dateien Byte für Byte mit dem Server.
+  // Damit wird jede Änderung erkannt – auch wenn eine Versionsnummer vergessen wurde.
+  const CHECK = '_kzcheck';
+  const UPD_KEY = 'kraftzyklus.update';
+  const CORE = ['./', 'index.html', 'app.css', 'app.js', 'manifest.webmanifest',
+    'fonts/barlow-condensed-latin-600-normal.woff2', 'fonts/barlow-condensed-latin-700-normal.woff2',
+    'icons/apple-touch-icon.png', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-512.png'];
+  let swReg = null, reloading = false, pending = [];
+  const updInfo = () => { try { return JSON.parse(localStorage.getItem(UPD_KEY)) || {}; } catch (e) { return {}; } };
+  const setUpdInfo = (p) => { try { localStorage.setItem(UPD_KEY, JSON.stringify(Object.assign(updInfo(), p))); } catch (e) { /* egal */ } };
   function requestPersist() { try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) { /* optional */ } }
-  function watchWaiting(reg) {
-    if (reg.waiting && navigator.serviceWorker.controller) { V.update = 'available'; reg.waiting.postMessage('GET_VERSION'); }
+
+  function freshFetch(path) {
+    const u = new URL(path, location.href);
+    u.searchParams.set(CHECK, Date.now().toString(36));
+    return fetch(u.href, { cache: 'no-store' }).then((r) => { if (!r.ok) throw new Error(path + ': ' + r.status); return r; });
   }
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('sw.js').then((reg) => {
-      swReg = reg; watchWaiting(reg);
-      reg.addEventListener('updatefound', () => {
-        const nw = reg.installing;
-        if (nw) nw.addEventListener('statechange', () => { if (nw.state === 'installed') { watchWaiting(reg); if (V.sub === 'settings') render(); } });
-      });
-    }).catch(() => { /* z. B. lokal per file:// */ });
-    navigator.serviceWorker.addEventListener('message', (e) => { if (e.data && e.data.type === 'VERSION') { V.newVersion = e.data.version; if (V.sub === 'settings') render(); } });
-    navigator.serviceWorker.addEventListener('controllerchange', () => { if (reloading) location.reload(); });
+  async function appCache() {
+    if (!('caches' in window)) return null;
+    const names = (await caches.keys()).filter((n) => n.startsWith('kraftzyklus-'));
+    return names.length ? caches.open(names[names.length - 1]) : null;
   }
-  async function checkUpdate() {
-    if (!swReg) { V.update = 'error'; render(); return; }
-    if (!navigator.onLine) { V.update = 'offline'; render(); toast('Keine Verbindung – später nochmal versuchen'); return; }
-    V.update = 'checking'; render();
-    try {
-      await swReg.update();
-      const nw = swReg.installing;
-      if (nw) await new Promise((res) => { const f = () => { if (nw.state === 'installed' || nw.state === 'redundant') { nw.removeEventListener('statechange', f); res(); } }; nw.addEventListener('statechange', f); f(); });
-      if (swReg.waiting) { V.update = 'available'; swReg.waiting.postMessage('GET_VERSION'); }
-      else { V.update = 'latest'; toast('Du hast die neueste Version'); }
-    } catch (e) { V.update = 'error'; toast('Update-Prüfung fehlgeschlagen'); }
-    render();
+  function sameBytes(a, b) {
+    if (a.byteLength !== b.byteLength) return false;
+    const x = new Uint8Array(a), y = new Uint8Array(b);
+    for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return false;
+    return true;
   }
-  function applyUpdate() {
-    if (!swReg || !swReg.waiting) { checkUpdate(); return; }
-    reloading = true;
-    swReg.waiting.postMessage('SKIP_WAITING');
-    setTimeout(() => location.reload(), 3000);
+  // Liefert die geänderten Dateien (mit frischer Antwort) oder wirft bei Netzfehler
+  async function diffFiles(cache, only) {
+    const reqs = await cache.keys();
+    const list = only ? reqs.filter((r) => only.some((p) => new URL(r.url).pathname.endsWith(p))) : reqs;
+    const res = await Promise.all(list.map(async (req) => {
+      const [net, old] = await Promise.all([freshFetch(req.url), cache.match(req)]);
+      const a = await net.clone().arrayBuffer();
+      const b = old ? await old.arrayBuffer() : null;
+      return b && sameBytes(a, b) ? null : { req, net, name: new URL(req.url).pathname.split('/').pop() || 'index.html' };
+    }));
+    return res.filter(Boolean);
+  }
+  // Wartet kurz, bis ein neu gefundener Service Worker fertig installiert ist
+  async function swUpdateWaiting() {
+    if (!swReg) return false;
+    try { await swReg.update(); } catch (e) { return !!swReg.waiting; }
+    const t0 = Date.now();
+    while (swReg.installing && Date.now() - t0 < 8000) await new Promise((r) => setTimeout(r, 150));
+    return !!swReg.waiting;
   }
 
+  async function checkUpdate(silent) {
+    if (V.update === 'checking' || V.update === 'installing') return;
+    if (!navigator.onLine) { if (!silent) { V.update = 'offline'; render(); } return; }
+    const before = V.update;
+    if (!silent) { V.update = 'checking'; render(); }
+    try {
+      const cache = await appCache();
+      if (!cache) { V.update = silent ? before : 'nocache'; if (!silent) render(); return; }
+      const changed = await diffFiles(cache, silent ? ['/', 'index.html', 'app.js', 'app.css'] : null);
+      const swNew = await swUpdateWaiting();
+      setUpdInfo({ checked: Date.now() });
+      if (changed.length || swNew) {
+        pending = changed;
+        V.update = 'available';
+        V.changed = changed.map((c) => c.name).filter((n, i, a) => a.indexOf(n) === i);
+        if (silent) toast('Update verfügbar – Plan › Zahnrad');
+      } else if (!silent) { V.update = 'latest'; }
+    } catch (e) {
+      if (!silent) { V.update = 'error'; V.updError = String(e && e.message || e); }
+    }
+    render();
+  }
+
+  async function applyUpdate() {
+    V.update = 'installing'; render();
+    try {
+      // Vor dem Übernehmen noch einmal alle Dateien vergleichen (die leise Prüfung schaut nur auf die Kerndateien)
+      if (navigator.onLine) { try { const c = await appCache(); if (c) pending = await diffFiles(c); } catch (e) { /* vorhandene Liste nutzen */ } }
+      if (pending.length) {
+        const cache = await appCache();
+        // Alle neuen Dateien sind schon geladen – jetzt in einem Schritt übernehmen
+        await Promise.all(pending.map((p) => cache.put(p.req, p.net)));
+      }
+      setUpdInfo({ updated: Date.now() });
+      pending = [];
+      if (swReg && swReg.waiting) {
+        reloading = true;
+        swReg.waiting.postMessage('SKIP_WAITING');
+        setTimeout(() => location.reload(), 2500);    // Fallback, falls iOS kein controllerchange meldet
+      } else location.reload();
+    } catch (e) {
+      V.update = 'error'; V.updError = 'Installation fehlgeschlagen'; render();
+    }
+  }
+
+  // Notausgang: App-Dateien komplett neu laden. Deine Trainingsdaten bleiben unberührt.
+  async function repairApp() {
+    if (!(await confirmSheet('App-Dateien neu laden?', 'Alle App-Dateien werden frisch vom Server geladen. Deine Trainingsdaten, Notizen und Einstellungen bleiben erhalten. Dafür brauchst du Internet.', 'Neu laden'))) return;
+    if (!navigator.onLine) { toast('Keine Verbindung – bitte online gehen'); return; }
+    V.update = 'installing'; render();
+    try {
+      const fresh = await Promise.all(CORE.map((f) => freshFetch(f).then((r) => [new URL(f, location.href).href, r])));
+      const names = (await caches.keys()).filter((n) => n.startsWith('kraftzyklus-'));
+      await Promise.all(names.map((n) => caches.delete(n)));
+      const cache = await caches.open('kraftzyklus-repair-' + Date.now());
+      await Promise.all(fresh.map(([u, r]) => cache.put(u, r)));
+      await Promise.all(CORE.map((f) => fetch(f, { cache: 'reload' }).catch(() => null)));   // auch den Browser-Cache auffrischen
+      const regs = navigator.serviceWorker ? await navigator.serviceWorker.getRegistrations() : [];
+      await Promise.all(regs.map((r) => r.unregister()));
+      setUpdInfo({ updated: Date.now() });
+      location.reload();
+    } catch (e) {
+      V.update = 'error'; V.updError = 'Server nicht erreichbar'; render();
+      toast('Neu laden fehlgeschlagen – bitte später erneut versuchen');
+    }
+  }
+
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('sw.js').then((reg) => {
+      swReg = reg;
+      if (reg.waiting && navigator.serviceWorker.controller) { V.update = 'available'; render(); }
+      reg.addEventListener('updatefound', () => {
+        const nw = reg.installing;
+        if (nw) nw.addEventListener('statechange', () => {
+          if (nw.state === 'installed' && navigator.serviceWorker.controller && V.update !== 'installing') { V.update = 'available'; render(); }
+        });
+      });
+    }).catch(() => { /* z. B. lokal per file:// */ });
+    navigator.serviceWorker.addEventListener('controllerchange', () => { if (reloading) location.reload(); });
+  }
+  // Leise prüfen: beim Start und beim Zurückkehren in die App, höchstens alle 6 Stunden
+  function autoCheck() {
+    const last = updInfo().checked || 0;
+    if (Date.now() - last > 6 * 3600000 && V.update !== 'available') checkUpdate(true);
+  }
+  setTimeout(autoCheck, 4000);
+
   // Bei Rückkehr in die App ggf. neu zeichnen (z. B. Backup-Erinnerung)
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && !document.querySelector('.overlay') && document.activeElement.tagName !== 'TEXTAREA' && document.activeElement.tagName !== 'INPUT') render(); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    setWake(V.sub === 'lift');
+    autoCheck();
+    if (!document.querySelector('.overlay') && document.activeElement.tagName !== 'TEXTAREA' && document.activeElement.tagName !== 'INPUT') render();
+  });
 
   render();
 })();
