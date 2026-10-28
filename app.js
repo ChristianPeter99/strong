@@ -2,7 +2,7 @@
    Alle Daten bleiben lokal auf dem Gerät (localStorage). Kein Netzwerkzugriff außer App-Updates. */
 'use strict';
 (() => {
-  const APP_VERSION = '1.2.1';
+  const APP_VERSION = '1.3.0';
   const STORE_KEY = 'kraftzyklus.v1';
   const CYCLES = 10;
   const BAR = 20;
@@ -353,8 +353,14 @@
     if (isCurrent) {
       const states = LIFTS.map((l) => entry(pos.c, pos.w, l.id).s);
       const n = states.filter(Boolean).length;
-      kids.push(h('button', { class: 'btn primary block', type: 'button', disabled: n < 4, onclick: finishWeek },
-        n < 4 ? n + ' von 4 Übungen eingetragen' : (pos.w === 4 ? (pos.c === CYCLES ? 'Runde abschließen' : 'Zyklus ' + pos.c + ' abschließen') : weekName(pos.w) + ' abschließen')));
+      const label = pos.w === 4 ? (pos.c === CYCLES ? 'Runde abschließen' : 'Zyklus ' + pos.c + ' abschließen') : weekName(pos.w) + ' abschließen';
+      kids.push(h('button', { class: 'btn ' + (n === 4 ? 'primary' : 'ghost') + ' block', type: 'button', onclick: async () => {
+        if (n < 4) {
+          const open = LIFTS.filter((l) => !entry(pos.c, pos.w, l.id).s).map((l) => l.name);
+          if (!(await confirmSheet('Trotzdem abschließen?', (open.length === 1 ? open[0] + ' ist' : open.join(', ') + ' sind') + ' noch nicht eingetragen. Offene Übungen zählen beim Zyklusende wie „nicht geschafft“.', 'Abschließen'))) return;
+        }
+        finishWeek();
+      } }, label, n < 4 ? h('span', { class: 'tiny', style: { opacity: '0.7', fontWeight: '500' }, text: '(' + n + ' von 4)' }) : null));
       kids.push(h('button', { class: 'link', type: 'button', style: { alignSelf: 'center' }, onclick: repeatSheet }, icon('repeat', 'i s'), 'Woche wiederholen …'));
     }
     return h('main', { class: 'screen' }, kids);
@@ -393,7 +399,7 @@
     S.lastActive = Date.now();
     if (w < 4) { S.pos = { c, w: w + 1 }; save(); V.wk = null; render(true); toast(weekName(w) + ' abgeschlossen'); return; }
     // Zyklusende: verpasste Einheiten prüfen
-    const flagged = LIFTS.map((l) => ({ l, miss: [0, 1, 2, 3].filter((wk) => entry(c, wk, l.id).s === 'miss').length })).filter((x) => x.miss >= MISS_LIMIT);
+    const flagged = LIFTS.map((l) => ({ l, miss: [0, 1, 2, 3].filter((wk) => entry(c, wk, l.id).s !== 'ok').length })).filter((x) => x.miss >= MISS_LIMIT);
     const advance = (skipIds) => {
       if (c === CYCLES) { S.roundDone = true; cur().finished = Date.now(); }
       else { skipIds.forEach((id) => { if (!S.skips[id].includes(c + 1)) S.skips[id].push(c + 1); }); S.pos = { c: c + 1, w: 0 }; }
@@ -403,10 +409,10 @@
     if (!flagged.length || c === CYCLES) { advance([]); return; }
     const picks = Object.fromEntries(flagged.map((x) => [x.l.id, true]));
     sheet('Steigerung aussetzen?', (close) => h('div', { class: 'stack' },
-      h('p', { class: 'muted small', text: 'Bei diesen Übungen hast du in Zyklus ' + c + ' mehrmals „nicht geschafft“ eingetragen. Statt stur zu steigern, kannst du im nächsten Zyklus mit demselben Maximalkraftwert weitermachen.' }),
+      h('p', { class: 'muted small', text: 'Bei diesen Übungen hast du in Zyklus ' + c + ' mehrmals „nicht geschafft“ eingetragen oder offen gelassen. Statt stur zu steigern, kannst du im nächsten Zyklus mit demselben Maximalkraftwert weitermachen.' }),
       flagged.map((x) => h('label', { class: 'check' },
         h('input', { type: 'checkbox', checked: true, onchange: (e) => { picks[x.l.id] = e.target.checked; } }),
-        h('span', { class: 'grow' }, h('strong', { text: x.l.name }), h('span', { class: 'tiny muted', style: { display: 'block' }, text: x.miss + '× nicht geschafft · bleibt bei ' + fmt(orm(x.l.id, c)) + ' kg 1RM' })))),
+        h('span', { class: 'grow' }, h('strong', { text: x.l.name }), h('span', { class: 'tiny muted', style: { display: 'block' }, text: x.miss + '× nicht geschafft oder offen · bleibt bei ' + fmt(orm(x.l.id, c)) + ' kg 1RM' })))),
       h('div', { class: 'btns' },
         h('button', { class: 'btn ghost', type: 'button', text: 'Abbrechen', onclick: close }),
         h('button', { class: 'btn primary', type: 'button', text: 'Weiter', onclick: () => { close(); advance(Object.keys(picks).filter((k) => picks[k])); } }))));
