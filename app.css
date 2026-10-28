@@ -4,7 +4,7 @@
 :root {
   --bg: #121417; --card: #1C1F23; --card2: #24282D; --line: #2A2E33; --line2: #343940;
   --text: #ECEDEE; --muted: #A3A9AF; --dim: #5A616A;
-  --accent: #C6F432; --on-accent: #121417; --warn: #FFB547; --bad: #FF8A80;
+  --accent: #C6F432; --on-accent: #121417; --warn: #FFB547; --bad: #FF8A80; --good: #6EE7A0;
   --blue: #5BC0FF; --orange: #FF9F43; --pink: #E879B9;
   --display: "Barlow Condensed", "Arial Narrow", sans-serif;
   --body: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
@@ -81,21 +81,28 @@ svg.i.s { width: 18px; height: 18px; }
 .segments i.now { background: var(--accent); opacity: .5; }
 .chip { align-self: center; border: none; background: var(--card2); color: var(--text); border-radius: 999px; min-height: 36px; padding: 0 14px; font-size: 13px; font-weight: 600; }
 
-.lift { background: var(--card); border-radius: 16px; padding: 10px 14px 12px; display: flex; flex-direction: column; gap: 6px; }
-.lift.is-ok { box-shadow: inset 0 0 0 1px rgba(198, 244, 50, .35); }
-.lift.is-miss { box-shadow: inset 0 0 0 1px rgba(255, 181, 71, .45); }
-.lift-name { background: none; border: none; padding: 0; min-height: 36px; display: inline-flex; align-items: center; gap: 4px; font-size: 16px; font-weight: 600; color: var(--text); text-align: left; }
+.lift { width: 100%; text-align: left; border: 1px solid transparent; color: var(--text); background: var(--card); border-radius: 16px; padding: 10px 14px 12px; display: flex; flex-direction: column; gap: 4px; transition: background .15s; }
+.lift:active { background: var(--card2); }
+.lift.is-ok { background: rgba(74, 222, 128, .09); border-color: rgba(74, 222, 128, .32); }
+.lift.is-miss { background: rgba(255, 107, 107, .09); border-color: rgba(255, 107, 107, .32); }
+.lift-top { display: flex; align-items: center; justify-content: space-between; min-height: 28px; }
+.lift-name { display: inline-flex; align-items: center; gap: 4px; font-size: 16px; font-weight: 600; }
+.lift-name svg { color: var(--muted); }
 .lift-main { display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; }
 .kg { font-family: var(--display); font-weight: 700; font-size: 40px; line-height: 1; }
 .kg small { font-size: 18px; color: var(--muted); font-weight: 600; }
 .scheme { font-family: var(--display); font-weight: 600; font-size: 23px; color: var(--accent); }
+.badge { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 600; padding: 3px 8px; border-radius: 999px; background: var(--card2); color: var(--muted); }
+.badge.ok { background: rgba(74, 222, 128, .14); color: var(--good); }
+.badge.miss { background: rgba(255, 107, 107, .14); color: var(--bad); }
 .status { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 2px; }
 .status button { min-height: 44px; border-radius: 12px; border: 1px solid var(--line2); background: transparent; color: var(--muted); font-weight: 600; font-size: 14px; display: flex; align-items: center; justify-content: center; gap: 6px; }
-.status button.ok[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
-.status button.miss[aria-pressed="true"] { background: var(--warn); border-color: var(--warn); color: #1a1205; }
+.status button.ok[aria-pressed="true"] { background: rgba(74, 222, 128, .16); border-color: var(--good); color: var(--good); }
+.status button.miss[aria-pressed="true"] { background: rgba(255, 107, 107, .16); border-color: var(--bad); color: var(--bad); }
 .note-tag { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 12px; }
 
 .plates { display: flex; align-items: center; gap: 2px; height: 46px; flex: none; }
+.plates .bar, .plates .p { display: block; }
 .plates .bar { width: 10px; height: 4px; background: var(--dim); border-radius: 1px; }
 .plates .p { width: 9px; border-radius: 2px; }
 .plates.big { height: 80px; justify-content: center; gap: 3px; }
@@ -164,3 +171,8 @@ input[type=password] { width: 100%; height: 48px; background: var(--bg); border:
 .check input { width: 22px; height: 22px; accent-color: var(--accent); flex: none; }
 
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+
+.legend { display: flex; gap: 18px; font-size: 12px; color: var(--muted); padding: 0 4px; }
+.lg-plan { width: 18px; height: 0; border-top: 2px dashed #8A9099; }
+.lg-ist { width: 18px; height: 3px; border-radius: 2px; background: var(--text); }
+.lg-now { width: 0; height: 12px; border-left: 2px dotted var(--muted); }

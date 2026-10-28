@@ -36,6 +36,7 @@ Kraft-Masse-Kalkulation als Web-App fürs iPhone. Aus vier Bestwerten berechnet 
 - Wochengewicht: `MROUND(1RM × Prozent; 2,5)`, Prozente und Sätze wie in der Tabelle, Woche 5 = Deload mit 60 % · 4 × 8
 - Aufwärmen: 50 % × 8 und 75 % × 3 des Arbeitsgewichts (mind. Stange)
 - Scheibenrechner: 20-kg-Stange, Scheiben 20 / 15 / 10 / 5 / 2,5 / 1,25 kg
+- Verlauf: Plan = Test + Steigerung pro Zyklus; Ist = Maximalkraft eines Zyklus, in dem mind. 3 von 4 Wochen geschafft waren
 - Ab 2× „nicht geschafft“ in einem Zyklus schlägt die App vor, die Steigerung für diese Übung im nächsten Zyklus auszusetzen
 
 Schrift: Barlow Condensed, SIL Open Font License (`fonts/OFL.txt`).

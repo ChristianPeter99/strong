@@ -2,7 +2,7 @@
    Alle Daten bleiben lokal auf dem Gerät (localStorage). Kein Netzwerkzugriff außer App-Updates. */
 'use strict';
 (() => {
-  const APP_VERSION = '1.0.0';
+  const APP_VERSION = '1.1.0';
   const STORE_KEY = 'kraftzyklus.v1';
   const CYCLES = 10;
   const BAR = 20;
@@ -374,7 +374,8 @@
     }
     if (vp.w === 4) kids.push(h('div', { class: 'banner' }, h('span', { class: 'accent' }, icon('pause')), h('p', null, h('strong', { text: 'Deload: ' }), '60 % für alle Übungen. Locker bleiben, Technik sauber halten – danach steigen die Gewichte.')));
 
-    LIFTS.forEach((l) => kids.push(liftCard(l, vp, isCurrent)));
+    if (isCurrent && !LIFTS.some((l) => entry(pos.c, pos.w, l.id).s) && !backupDue() && vp.w !== 4) kids.push(h('p', { class: 'tiny muted', style: { textAlign: 'center', margin: '-4px 0' }, text: 'Übung antippen, um sie als geschafft einzutragen' }));
+    LIFTS.forEach((l) => kids.push(liftCard(l, vp)));
 
     if (isCurrent) {
       const states = LIFTS.map((l) => entry(pos.c, pos.w, l.id).s);
@@ -386,34 +387,33 @@
     return h('main', { class: 'screen' }, kids);
   }
 
-  function liftCard(l, vp, editable) {
+  function liftCard(l, vp) {
     const t = target(l.id, vp.c, vp.w);
     const e = entry(vp.c, vp.w, l.id);
     const pl = plates(t.kg);
     const skipped = vp.c > 1 && S.skips[l.id].includes(vp.c);
-    const setS = (s) => { setEntry(vp.c, vp.w, l.id, { s: e.s === s ? null : s }); S.lastActive = Date.now(); save(); render(); };
-    return h('section', { class: 'lift' + (e.s === 'ok' ? ' is-ok' : e.s === 'miss' ? ' is-miss' : ''), 'aria-label': l.name },
-      h('div', { class: 'row between' },
-        h('button', { class: 'lift-name', type: 'button', onclick: () => openSub('lift', { lift: { id: l.id, c: vp.c, w: vp.w } }) }, l.name, icon('chevR', 'i s')),
+    const state = e.s === 'ok' ? 'Geschafft' : e.s === 'miss' ? 'Nicht geschafft' : 'Offen';
+    return h('button', { class: 'lift' + (e.s === 'ok' ? ' is-ok' : e.s === 'miss' ? ' is-miss' : ''), type: 'button',
+      'aria-label': l.name + ', ' + fmt(t.kg) + ' kg, ' + t.scheme + ', ' + state + (e.note ? ', mit Notiz' : ''),
+      onclick: () => openSub('lift', { lift: { id: l.id, c: vp.c, w: vp.w } }) },
+      h('span', { class: 'lift-top' },
+        h('span', { class: 'lift-name' }, l.name, icon('chevR', 'i s')),
         h('span', { class: 'row', style: { gap: '10px' } },
-          e.note ? h('span', { class: 'note-tag' }, icon('note', 'i s'), 'Notiz') : null,
-          !editable && e.s ? h('span', { class: 'tiny', style: { color: e.s === 'ok' ? 'var(--accent)' : 'var(--warn)', fontWeight: '600' }, text: e.s === 'ok' ? 'Geschafft' : 'Nicht geschafft' }) : null)),
-      h('div', { class: 'lift-main' },
-        h('div', { class: 'col', style: { gap: '3px' } },
-          h('div', { class: 'row', style: { alignItems: 'baseline', gap: '12px' } },
+          e.note ? h('span', { class: 'note-tag' }, icon('note', 'i s')) : null,
+          e.s ? h('span', { class: 'badge ' + e.s }, icon(e.s === 'ok' ? 'check' : 'x', 'i s'), state) : null)),
+      h('span', { class: 'lift-main' },
+        h('span', { class: 'col', style: { gap: '3px' } },
+          h('span', { class: 'row', style: { alignItems: 'baseline', gap: '12px' } },
             h('span', { class: 'kg' }, fmt(t.kg), h('small', { text: ' kg' })), h('span', { class: 'scheme', text: t.scheme })),
           h('span', { class: 'tiny muted', text: t.pct + ' % von ' + fmt(t.orm) + ' kg · pro Seite: ' + (pl ? (pl.length ? pl.map(fmt).join(' + ') : 'nur Stange') : 'unter Stangengewicht') }),
           skipped ? h('span', { class: 'tiny', style: { color: 'var(--warn)' }, text: 'Steigerung in diesem Zyklus ausgesetzt' }) : null),
-        miniPlates(pl)),
-      editable ? h('div', { class: 'status' },
-        h('button', { class: 'ok', type: 'button', 'aria-pressed': String(e.s === 'ok'), onclick: () => setS('ok') }, icon('check', 'i s'), 'Geschafft'),
-        h('button', { class: 'miss', type: 'button', 'aria-pressed': String(e.s === 'miss'), onclick: () => setS('miss') }, icon('x', 'i s'), 'Nicht geschafft')) : null);
+        miniPlates(pl)));
   }
 
   function miniPlates(pl) {
     if (!pl) return null;
-    return h('div', { class: 'plates', 'aria-hidden': 'true' }, h('div', { class: 'bar' }),
-      pl.map((p) => h('div', { class: 'p', style: { height: Math.round(PLATE_LOOK[p][1] * 0.78) + 'px', background: PLATE_LOOK[p][0] } })));
+    return h('span', { class: 'plates', 'aria-hidden': 'true' }, h('span', { class: 'bar' }),
+      pl.map((p) => h('span', { class: 'p', style: { height: Math.round(PLATE_LOOK[p][1] * 0.78) + 'px', background: PLATE_LOOK[p][0] } })));
   }
 
   function finishWeek() {
@@ -571,53 +571,82 @@
           h('div', { class: 'row between' },
             h('span', { class: 'small muted', text: 'Test: ' + fmt(t.kg) + ' kg × ' + t.reps + ' → 1RM ' + fmt(t.orm) + ' kg' }),
             h('div', { class: 'seg dark', style: { minWidth: '104px' }, role: 'group', 'aria-label': l.name + ': Steigerung pro Zyklus' }, [2.5, 5].map((v) =>
-              h('button', { type: 'button', 'aria-pressed': String(S.inc[l.id] === v), text: '+' + fmt(v), onclick: () => { S.inc[l.id] = v; save(); render(); } })))),
-          h('span', { class: 'tiny muted', text: '95 %: ' + fmt(mround(t.orm * 0.95)) + ' kg · 90 %: ' + fmt(mround(t.orm * 0.9)) + ' kg · Steigerung kg / Zyklus' }));
+              h('button', { type: 'button', 'aria-pressed': String(S.inc[l.id] === v), text: '+' + fmt(v), onclick: () => { S.inc[l.id] = v; save(); render(); } })))));
       }),
       h('button', { class: 'btn ghost block', type: 'button', onclick: () => openSub('test', { testMode: 'edit', draft: null }) }, 'Testwerte korrigieren'),
       h('button', { class: 'btn ' + (S.roundDone ? 'primary' : 'ghost') + ' block', type: 'button', onclick: async () => {
         if (!S.roundDone && !(await confirmSheet('Neu testen?', 'Du bist in Zyklus ' + S.pos.c + '. Mit neuen Testwerten startet eine neue Runde ab Zyklus 1, Woche 1. Dein bisheriger Verlauf und deine Notizen bleiben erhalten.', 'Neu testen'))) return;
         openSub('test', { testMode: 'retest', draft: null });
       } }, 'Neu testen & neue Runde starten'),
-      h('p', { class: 'tiny muted', text: 'Formel wie in deiner Tabelle: 1RM = Gewicht + Gewicht × Wdh. × 0,033, gerundet auf 2,5 kg.' }));
+      h('p', { class: 'tiny muted', text: 'Steigerung = kg pro Zyklus. Formel wie in deiner Tabelle: 1RM = Gewicht + Gewicht × Wdh. × 0,033, gerundet auf 2,5 kg.' }));
   }
 
   // ---------- Verlauf ----------
+  const planVal = (id, c) => cur().test[id].orm + S.inc[id] * (c - 1);
+  // Ist = Maximalkraft, mit der ein Zyklus erfolgreich trainiert wurde (mind. 3 von 4 Wochen geschafft)
+  function istSeries(id) {
+    const last = S.roundDone ? CYCLES : S.pos.c - 1;
+    let reached = cur().test[id].orm;
+    const pts = [];
+    for (let k = 1; k <= last; k++) {
+      const ok = [0, 1, 2, 3].filter((w) => entry(k, w, id).s === 'ok').length;
+      if (ok >= 3) reached = Math.max(reached, orm(id, k));
+      pts.push({ c: k, v: reached });
+    }
+    return { pts: pts.length ? pts : [{ c: 1, v: reached }], last, now: reached };
+  }
+
+  function liftChart(l, ist) {
+    const W = 320, H = 118, L = 30, R = 312, T = 10, B = 96;
+    const lo0 = Math.min(cur().test[l.id].orm, ...ist.pts.map((p) => p.v));
+    const hi0 = planVal(l.id, CYCLES);
+    const lo = Math.floor((lo0 - 2) / 5) * 5, hi = Math.ceil((hi0 + 2) / 5) * 5;
+    const x = (c) => L + (c - 1) * (R - L) / (CYCLES - 1), y = (v) => B - (v - lo) / (hi - lo) * (B - T);
+    const planPts = Array.from({ length: CYCLES }, (_, i) => x(i + 1).toFixed(1) + ',' + y(planVal(l.id, i + 1)).toFixed(1)).join(' ');
+    const istPts = ist.pts.map((p) => x(p.c).toFixed(1) + ',' + y(p.v).toFixed(1)).join(' ');
+    const cx = x(S.roundDone ? CYCLES : S.pos.c);
+    const lastP = ist.pts[ist.pts.length - 1];
+    return h('svg:svg', { class: 'chart', viewBox: '0 0 ' + W + ' ' + H, role: 'img',
+      'aria-label': l.name + ': Plan von ' + fmt(planVal(l.id, 1)) + ' auf ' + fmt(hi0) + ' kg, Ist aktuell ' + fmt(ist.now) + ' kg' },
+      [lo, hi].map((v) => [h('svg:line', { x1: L, x2: R, y1: y(v), y2: y(v), stroke: '#2A2E33' }),
+        h('svg:text', { x: 0, y: y(v) + 4, fill: '#A3A9AF', 'font-size': '10' }, fmt(v))]),
+      h('svg:line', { x1: cx, x2: cx, y1: T - 4, y2: B + 2, stroke: '#ECEDEE', 'stroke-dasharray': '2 4', opacity: '0.45' }),
+      h('svg:text', { x: L, y: H - 4, fill: '#A3A9AF', 'font-size': '10' }, 'Z1'),
+      h('svg:text', { x: R - 18, y: H - 4, fill: '#A3A9AF', 'font-size': '10' }, 'Z10'),
+      h('svg:polyline', { points: planPts, fill: 'none', stroke: '#8A9099', 'stroke-width': '2', 'stroke-dasharray': '5 5', 'stroke-linecap': 'round' }),
+      ist.pts.length > 1 ? h('svg:polyline', { points: istPts, fill: 'none', stroke: l.color, 'stroke-width': '3', 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }) : null,
+      ist.pts.map((p) => h('svg:circle', { cx: x(p.c), cy: y(p.v), r: p === lastP ? '5' : '3', fill: p === lastP ? '#1C1F23' : l.color, stroke: l.color, 'stroke-width': '2.5' })));
+  }
+
   function renderVerlauf() {
     const done = S.roundDone ? 50 : (S.pos.c - 1) * 5 + S.pos.w;
     const pct = Math.round(done / 50 * 100);
-    const W = 340, H = 230, L = 34, R = 300, T = 16, B = 196;
-    const all = LIFTS.flatMap((l) => [orm(l.id, 1), orm(l.id, CYCLES)]);
-    let lo = Math.floor(Math.min(...all) / 20) * 20, hi = Math.ceil(Math.max(...all) / 20) * 20;
-    if (hi - lo < 40) hi = lo + 40;
-    const x = (i) => L + i * (R - L) / (CYCLES - 1), y = (v) => B - (v - lo) / (hi - lo) * (B - T);
-    const grid = [lo, (lo + hi) / 2, hi].map((v) => [h('svg:line', { x1: L, x2: R, y1: y(v), y2: y(v), stroke: '#2A2E33' }),
-      h('svg:text', { x: 0, y: y(v) + 4, fill: '#A3A9AF', 'font-size': '11' }, fmt(v))]);
-    const ends = LIFTS.map((l) => ({ l, y: y(orm(l.id, CYCLES)) })).sort((a, b) => a.y - b.y);
-    for (let i = 1; i < ends.length; i++) if (ends[i].y - ends[i - 1].y < 13) ends[i].y = ends[i - 1].y + 13;
-    const cx = x(S.pos.c - 1);
-    const svg = h('svg:svg', { class: 'chart', viewBox: '0 0 ' + W + ' ' + H, role: 'img',
-      'aria-label': 'Geplante Maximalkraft: ' + LIFTS.map((l) => l.name + ' ' + fmt(orm(l.id, 1)) + ' auf ' + fmt(orm(l.id, CYCLES)) + ' kg').join(', ') },
-      grid,
-      h('svg:line', { x1: cx, x2: cx, y1: T - 6, y2: B + 4, stroke: '#ECEDEE', 'stroke-dasharray': '3 4', opacity: '0.5' }),
-      h('svg:text', { x: Math.min(cx + 4, R - 30), y: H - 18, fill: '#ECEDEE', 'font-size': '11' }, 'jetzt'),
-      h('svg:text', { x: L, y: H - 4, fill: '#A3A9AF', 'font-size': '11' }, 'Z1'),
-      h('svg:text', { x: R - 14, y: H - 4, fill: '#A3A9AF', 'font-size': '11' }, 'Z10'),
-      LIFTS.map((l) => h('svg:polyline', { points: Array.from({ length: CYCLES }, (_, i) => x(i).toFixed(1) + ',' + y(orm(l.id, i + 1)).toFixed(1)).join(' '),
-        fill: 'none', stroke: l.color, 'stroke-width': '3', 'stroke-linejoin': 'round', 'stroke-linecap': 'round' })),
-      LIFTS.map((l) => h('svg:circle', { cx, cy: y(orm(l.id, S.pos.c)), r: '4.5', fill: '#1C1F23', stroke: l.color, 'stroke-width': '2.5' })),
-      ends.map((e) => h('svg:text', { x: R + 6, y: e.y + 4, fill: e.l.color, 'font-size': '11', 'font-weight': '600' }, e.l.short)));
-
     const hist = S.rounds.slice().reverse();
     return h('main', { class: 'screen' },
       h('h1', { text: 'Verlauf' }),
       h('div', { class: 'card col', style: { gap: '8px' } },
-        h('div', { class: 'row between small' }, h('strong', { text: S.roundDone ? 'Runde ' + S.round + ' abgeschlossen' : 'Zyklus ' + S.pos.c + ' · ' + weekShort(S.pos.w) }), h('span', { class: 'muted', text: done + ' von 50 Wochen' })),
+        h('div', { class: 'row between small' }, h('strong', { text: S.roundDone ? 'Runde ' + S.round + ' abgeschlossen' : 'Runde ' + S.round + ' · Zyklus ' + S.pos.c + ' · ' + weekShort(S.pos.w) }), h('span', { class: 'muted', text: done + ' / 50 Wochen' })),
         h('div', { class: 'progress', role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': '50', 'aria-valuenow': String(done), 'aria-label': 'Fortschritt der Runde' }, h('div', { style: { width: pct + '%' } }))),
-      h('figure', { class: 'card col', style: { margin: '0', gap: '6px' } }, h('figcaption', { class: 'small', style: { fontWeight: '600' }, text: 'Geplante Maximalkraft, Zyklus 1–10' }), svg),
-      h('div', { class: 'card tight' }, LIFTS.map((l) => h('div', { class: 'list-row' },
-        h('span', { class: 'dot', style: { background: l.color } }), h('strong', { class: 'grow', text: l.name }),
-        h('span', { class: 'muted small' }, fmt(orm(l.id, 1)) + ' → ', h('strong', { style: { color: 'var(--text)' }, text: fmt(orm(l.id, CYCLES)) + ' kg' }))))),
+      h('div', { class: 'legend' },
+        h('span', { class: 'row', style: { gap: '6px' } }, h('span', { class: 'lg-plan' }), 'Plan'),
+        h('span', { class: 'row', style: { gap: '6px' } }, h('span', { class: 'lg-ist' }), 'Ist'),
+        h('span', { class: 'row', style: { gap: '6px' } }, h('span', { class: 'lg-now' }), 'jetzt')),
+      LIFTS.map((l) => {
+        const ist = istSeries(l.id);
+        const planNow = ist.last ? planVal(l.id, ist.last) : planVal(l.id, 1);
+        const diff = ist.now - planNow;
+        const chip = !ist.last ? h('span', { class: 'badge', text: 'Start' })
+          : diff >= 0 ? h('span', { class: 'badge ok' }, icon('check', 'i s'), 'im Plan')
+            : h('span', { class: 'badge miss', text: fmt(diff) + ' kg' });
+        return h('section', { class: 'card col', style: { gap: '6px' }, 'aria-label': l.name },
+          h('div', { class: 'row between' }, h('span', { class: 'row', style: { gap: '8px' } }, h('span', { class: 'dot', style: { background: l.color } }), h('strong', { text: l.name })), chip),
+          h('div', { class: 'row', style: { gap: '16px', alignItems: 'baseline' } },
+            h('span', null, h('span', { class: 'tiny muted', text: 'Ist ' }), h('span', { class: 'num', style: { fontSize: '26px', color: l.color }, text: fmt(ist.now) }), h('span', { class: 'tiny muted', text: ' kg' })),
+            h('span', null, h('span', { class: 'tiny muted', text: 'Plan ' }), h('span', { class: 'num', style: { fontSize: '20px' }, text: fmt(planNow) }), h('span', { class: 'tiny muted', text: ' kg' })),
+            h('span', { class: 'grow', style: { textAlign: 'right' } }, h('span', { class: 'tiny muted', text: 'Ziel Z10 ' }), h('span', { class: 'num', style: { fontSize: '20px' }, text: fmt(planVal(l.id, CYCLES)) }))),
+          liftChart(l, ist));
+      }),
+      h('p', { class: 'tiny muted', text: 'Ist = Maximalkraft, mit der du einen Zyklus erfolgreich trainiert hast (mind. 3 von 4 Wochen geschafft). Startwert ist dein Test. Plan = Test + Steigerung pro Zyklus.' }),
       h('div', { class: 'label', text: 'Deine Tests' }),
       h('div', { class: 'card tight' }, hist.map((r, i) => {
         const prevR = hist[i + 1];
@@ -626,7 +655,7 @@
           h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: '4px' } }, LIFTS.map((l) => {
             const d = prevR ? r.test[l.id].orm - prevR.test[l.id].orm : null;
             return h('div', { class: 'col center', style: { gap: '0' } }, h('span', { class: 'tiny muted', text: l.short }), h('span', { class: 'num', style: { fontSize: '20px' }, text: fmt(r.test[l.id].orm) }),
-              d != null ? h('span', { class: 'tiny', style: { color: d >= 0 ? 'var(--accent)' : 'var(--warn)' }, text: (d >= 0 ? '+' : '') + fmt(d) }) : null);
+              d != null ? h('span', { class: 'tiny', style: { color: d >= 0 ? 'var(--good)' : 'var(--bad)' }, text: (d >= 0 ? '+' : '') + fmt(d) }) : null);
           })));
       })));
   }
