@@ -1,6 +1,6 @@
 /* Kraftzyklus Service Worker – App-Dateien offline vorhalten.
    Bei jedem Release VERSION erhöhen (gleich wie APP_VERSION in app.js). */
-const VERSION = '1.1.0';
+const VERSION = '1.2.1';
 const CACHE = 'kraftzyklus-' + VERSION;
 const FILES = [
   './',

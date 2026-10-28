@@ -2,7 +2,7 @@
    Alle Daten bleiben lokal auf dem Gerät (localStorage). Kein Netzwerkzugriff außer App-Updates. */
 'use strict';
 (() => {
-  const APP_VERSION = '1.1.0';
+  const APP_VERSION = '1.2.1';
   const STORE_KEY = 'kraftzyklus.v1';
   const CYCLES = 10;
   const BAR = 20;
@@ -29,7 +29,9 @@
   const planOf = (id, w) => (w === 4 ? DELOAD : LIFT[id].plan[w]);
 
   function cur() { return S.rounds[S.rounds.length - 1]; }
+  const hasTest = (id) => !!cur().test[id];
   function orm(id, c) {
+    if (!hasTest(id)) return 0;
     let v = cur().test[id].orm;
     for (let k = 2; k <= c; k++) if (!S.skips[id].includes(k)) v += S.inc[id];
     return v;
@@ -70,9 +72,10 @@
   const daysAgo = (t) => Math.floor((Date.now() - t) / DAY);
 
   // ---------- Speicher ----------
+  function newRound(n) { return { n, date: Date.now(), test: Object.fromEntries(LIFTS.map((l) => [l.id, null])) }; }
   function blank() {
     return {
-      v: 1, setup: false, round: 1, rounds: [],
+      v: 1, setup: true, round: 1, rounds: [newRound(1)],
       inc: Object.fromEntries(LIFTS.map((l) => [l.id, l.inc])),
       skips: Object.fromEntries(LIFTS.map((l) => [l.id, []])),
       pos: { c: 1, w: 0 }, roundDone: false, log: {},
@@ -83,16 +86,22 @@
     try { return validInner(d); } catch (e) { return false; }
   }
   function validInner(d) {
-    return d && d.v === 1 && Array.isArray(d.rounds) && d.inc && d.skips && d.pos && typeof d.log === 'object' &&
+    return !!(d && d.v === 1 && Array.isArray(d.rounds) && d.inc && d.skips && d.pos && typeof d.log === 'object' &&
       LIFTS.every((l) => typeof d.inc[l.id] === 'number' && Array.isArray(d.skips[l.id])) &&
-      (!d.setup || (d.rounds.length && LIFTS.every((l) => d.rounds[d.rounds.length - 1].test && typeof d.rounds[d.rounds.length - 1].test[l.id].orm === 'number')));
+      d.rounds.every((r) => r && r.test && LIFTS.every((l) => r.test[l.id] === null || r.test[l.id] === undefined || typeof r.test[l.id].orm === 'number')));
+  }
+  function migrate(d) {
+    if (!d.rounds.length) { d.rounds = [newRound(1)]; d.round = 1; }
+    d.rounds.forEach((r) => LIFTS.forEach((l) => { if (r.test[l.id] === undefined) r.test[l.id] = null; }));
+    d.setup = true;
+    return d;
   }
   function load() {
     try {
       const raw = localStorage.getItem(STORE_KEY);
       if (!raw) return blank();
       const d = JSON.parse(raw);
-      return valid(d) ? d : blank();
+      return valid(d) ? migrate(d) : blank();
     } catch (e) { return blank(); }
   }
   function save() {
@@ -102,7 +111,7 @@
   let S = load();
 
   // ---------- UI-Zustand (nicht gespeichert) ----------
-  const V = { tab: 'woche', sub: null, wk: null, lift: null, planC: null, planView: -1, testMode: 'first', update: 'idle', newVersion: null };
+  const V = { tab: 'woche', sub: null, wk: null, lift: null, planC: null, planView: -1, update: 'idle', newVersion: null };
 
   // ---------- DOM-Helfer ----------
   const SVGNS = 'http://www.w3.org/2000/svg';
@@ -202,13 +211,11 @@
   function render(scrollTop) {
     app.replaceChildren();
     let screen;
-    if (!S.setup) screen = V.sub === 'test' ? renderTest() : renderWelcome();
-    else if (V.sub === 'lift') screen = renderLift();
+    if (V.sub === 'lift') screen = renderLift();
     else if (V.sub === 'settings') screen = renderSettings();
-    else if (V.sub === 'test') screen = renderTest();
     else screen = ({ woche: renderWoche, plan: renderPlan, kraft: renderKraft, verlauf: renderVerlauf })[V.tab]();
     app.append(screen);
-    if (S.setup && V.sub !== 'test') app.append(renderTabbar());
+    app.append(renderTabbar());
     if (scrollTop) window.scrollTo(0, 0);
   }
 
@@ -220,109 +227,70 @@
     }));
   }
 
-  // ---------- Start / Test ----------
-  function renderWelcome() {
-    return h('main', { class: 'screen no-tabs', style: { minHeight: '100dvh', justifyContent: 'center' } },
-      h('div', { class: 'col', style: { gap: '10px', marginBottom: '12px' } },
-        h('span', { class: 'accent', style: { display: 'flex' } }, icon('week', 'i')),
-        h('h1', { style: { fontSize: '46px' }, text: 'Kraftzyklus' }),
-        h('p', { class: 'muted', text: 'Deine Kraft-Masse-Kalkulation: Aus vier Bestwerten berechnet die App Zielgewichte für 10 Zyklen à 5 Wochen. Alle Daten bleiben auf diesem iPhone.' })),
-      h('button', { class: 'btn primary block', type: 'button', text: 'Bestwerte testen', onclick: () => openSub('test', { testMode: 'first', draft: null }) }),
-      h('button', { class: 'btn ghost block', type: 'button', onclick: startImport }, icon('up'), 'Backup importieren'),
-      h('p', { class: 'tiny muted', style: { textAlign: 'center', marginTop: '8px' }, text: 'Version ' + APP_VERSION })
-    );
-  }
-
-  function renderTest() {
-    const mode = S.setup ? V.testMode : 'first';
-    if (!V.draft) {
-      V.draft = {};
-      LIFTS.forEach((l) => {
-        const t = mode === 'edit' ? cur().test[l.id] : null;
-        V.draft[l.id] = { kg: t ? String(t.kg).replace('.', ',') : '', reps: t ? String(t.reps) : '', inc: S.inc[l.id] };
-      });
-    }
-    const D = V.draft;
-    const parse = (s) => { const n = parseFloat(String(s).replace(',', '.')); return isFinite(n) ? n : NaN; };
-    const ok = (id) => { const kg = parse(D[id].kg), r = parse(D[id].reps); return kg >= 1 && kg <= 500 && Number.isInteger(r) && r >= 1 && r <= 30; };
-    const submit = h('button', { class: 'btn primary block', type: 'button' });
-    const titles = { first: ['Bestwerte testen', 'Plan erstellen'], retest: ['Neu testen', 'Neue Runde starten'], edit: ['Testwerte korrigieren', 'Speichern'] };
-    submit.textContent = titles[mode][1];
-    const refreshSubmit = () => { submit.disabled = !LIFTS.every((l) => ok(l.id)); };
-
-    const cards = LIFTS.map((l) => {
-      const d = D[l.id];
-      const out = h('span', { class: 'orm empty', text: '–' });
-      const sub = h('span', { class: 'tiny muted', text: '95 %: – · 90 %: –' });
-      const warn = h('span', { class: 'hint-warn', hidden: true });
-      const kgIn = h('input', { type: 'text', inputmode: 'decimal', enterkeyhint: 'next', autocomplete: 'off', 'aria-label': l.name + ': Gewicht in kg', value: d.kg, placeholder: mode === 'retest' ? fmt(cur().test[l.id].kg) : '0' });
-      const repIn = h('input', { class: 'reps', type: 'text', inputmode: 'numeric', enterkeyhint: 'next', autocomplete: 'off', 'aria-label': l.name + ': Wiederholungen', value: d.reps, placeholder: mode === 'retest' ? String(cur().test[l.id].reps) : '0' });
+  // ---------- Maximalkraft eintragen (pro Übung, an beliebigen Tagen) ----------
+  const parseNum = (s) => { const n = parseFloat(String(s).replace(',', '.')); return isFinite(n) ? n : NaN; };
+  function testSheet(id) {
+    const l = LIFT[id];
+    const t = cur().test[id];
+    sheet(l.name + (t ? ' ändern' : ' eintragen'), (close) => {
+      const kgIn = h('input', { type: 'text', inputmode: 'decimal', autocomplete: 'off', 'aria-label': l.name + ': Gewicht in kg', value: t ? fmt(t.kg) : '', placeholder: '0' });
+      const repIn = h('input', { class: 'reps', type: 'text', inputmode: 'numeric', autocomplete: 'off', 'aria-label': l.name + ': Wiederholungen', value: t ? String(t.reps) : '', placeholder: '0' });
+      const out = h('span', { class: 'orm empty', text: '0 kg' });
+      const warn = h('p', { class: 'hint-warn', hidden: true });
+      const saveBtn = h('button', { class: 'btn primary', type: 'button', text: 'Speichern', disabled: true });
+      let inc = S.inc[id];
+      const ok = () => { const kg = parseNum(kgIn.value), r = parseNum(repIn.value); return kg >= 1 && kg <= 500 && Number.isInteger(r) && r >= 1 && r <= 30; };
       const upd = () => {
-        d.kg = kgIn.value.trim(); d.reps = repIn.value.trim();
-        const r = parse(d.reps);
-        const outside = d.reps !== '' && isFinite(r) && (r < REP_MIN || r > REP_MAX);
+        const r = parseNum(repIn.value);
+        const outside = repIn.value.trim() !== '' && isFinite(r) && (r < REP_MIN || r > REP_MAX);
         warn.hidden = !outside;
         warn.textContent = r > REP_MAX ? 'Über ' + REP_MAX + ' Wdh. wird die Schätzung ungenau (eher zu niedrig).' : 'Unter ' + REP_MIN + ' Wdh. schätzt die Formel etwas zu hoch.';
         repIn.classList.toggle('warn', outside);
-        if (ok(l.id)) {
-          const o = oneRM(parse(d.kg), r);
-          out.textContent = fmt(o) + ' kg'; out.classList.remove('empty');
-          sub.textContent = '95 %: ' + fmt(mround(o * 0.95)) + ' kg · 90 %: ' + fmt(mround(o * 0.9)) + ' kg';
-        } else { out.textContent = '–'; out.classList.add('empty'); sub.textContent = '95 %: – · 90 %: –'; }
-        refreshSubmit();
+        if (ok()) { out.textContent = fmt(oneRM(parseNum(kgIn.value), r)) + ' kg'; out.classList.remove('empty'); }
+        else { out.textContent = '0 kg'; out.classList.add('empty'); }
+        saveBtn.disabled = !ok();
       };
       kgIn.addEventListener('input', upd); repIn.addEventListener('input', upd);
-      const incSeg = h('div', { class: 'seg dark', role: 'group', 'aria-label': l.name + ': Steigerung pro Zyklus' }, [2.5, 5].map((v) =>
-        h('button', { type: 'button', 'aria-pressed': String(d.inc === v), text: '+' + fmt(v), onclick: (e) => {
-          d.inc = v; e.currentTarget.parentNode.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b === e.currentTarget)));
-        } })));
-      const card = h('div', { class: 'test-card' },
-        h('div', { class: 'row between' }, h('strong', { text: l.name }), h('span', { class: 'row', style: { gap: '6px' } }, h('span', { class: 'tiny muted', text: '1RM' }), out)),
+      saveBtn.addEventListener('click', () => {
+        if (!ok()) return;
+        const kg = parseNum(kgIn.value), reps = parseNum(repIn.value);
+        cur().test[id] = { kg, reps, orm: oneRM(kg, reps), date: Date.now() };
+        S.inc[id] = inc; S.lastActive = Date.now();
+        save(); requestPersist(); close(); render();
+        toast(l.name + ': Maximalkraft ' + fmt(cur().test[id].orm) + ' kg');
+      });
+      setTimeout(upd);
+      return h('div', { class: 'stack' },
+        h('p', { class: 'muted small', text: 'Gewicht wählen, mit dem du sauber ' + REP_MIN + '–' + REP_MAX + ' Wiederholungen bis kurz vor Muskelversagen schaffst – dort ist die Formel am genauesten. Mit Sicherung testen.' }),
         h('div', { class: 'row', style: { gap: '6px', flexWrap: 'wrap' } },
           h('label', { class: 'field' }, kgIn, 'kg'), h('span', { class: 'muted', text: '×' }), h('label', { class: 'field' }, repIn, 'Wdh.'),
-          h('div', { style: { marginLeft: 'auto', minWidth: '104px' } }, incSeg)),
-        h('div', { class: 'row between' }, sub, h('span', { class: 'tiny muted', text: 'kg / Zyklus' })),
-        warn);
-      setTimeout(upd);
-      return card;
+          h('span', { class: 'col', style: { marginLeft: 'auto', alignItems: 'flex-end', gap: '0' } }, h('span', { class: 'tiny muted', text: 'Maximalkraft' }), out)),
+        warn,
+        h('div', { class: 'row between' }, h('span', { class: 'small muted', text: 'Steigerung pro Zyklus' }),
+          h('div', { class: 'seg dark', style: { minWidth: '112px' }, role: 'group', 'aria-label': 'Steigerung pro Zyklus' }, [2.5, 5].map((v) =>
+            h('button', { type: 'button', 'aria-pressed': String(inc === v), text: '+' + fmt(v) + ' kg', onclick: (e) => {
+              inc = v; e.currentTarget.parentNode.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b === e.currentTarget)));
+            } })))),
+        h('div', { class: 'btns' }, h('button', { class: 'btn ghost', type: 'button', text: 'Abbrechen', onclick: close }), saveBtn));
     });
+  }
 
-    submit.addEventListener('click', () => {
-      const test = {};
-      LIFTS.forEach((l) => { const kg = parse(D[l.id].kg), reps = parse(D[l.id].reps); test[l.id] = { kg, reps, orm: oneRM(kg, reps) }; });
-      LIFTS.forEach((l) => { S.inc[l.id] = D[l.id].inc; });
-      if (mode === 'edit') { cur().test = test; toast('Testwerte gespeichert'); }
-      else {
-        if (S.rounds.length) cur().finished = cur().finished || Date.now();
-        const n = S.rounds.length + 1;
-        S.rounds.push({ n, date: Date.now(), test });
-        S.round = n; S.pos = { c: 1, w: 0 }; S.roundDone = false;
-        S.skips = Object.fromEntries(LIFTS.map((l) => [l.id, []]));
-        if (!S.setup) { S.setup = true; S.createdAt = Date.now(); requestPersist(); }
-        toast(n === 1 ? 'Plan erstellt – los geht’s mit Woche 1' : 'Runde ' + n + ' gestartet');
-      }
-      S.lastActive = Date.now();
-      save(); V.draft = null; V.wk = null; V.tab = 'woche';
-      if (history.state && history.state.sub) { V.sub = null; history.back(); } else { V.sub = null; }
-      render(true);
-    });
-
-    const back = (S.setup || mode === 'first') ? h('button', { class: 'link', type: 'button', style: { alignSelf: 'flex-start' }, onclick: () => { V.draft = null; closeSub(); } }, icon('chevL', 'i s'), 'Zurück') : null;
-    return h('main', { class: 'screen no-tabs' },
-      back,
-      h('h1', { text: titles[mode][0] }),
-      h('div', { class: 'banner' }, h('span', { class: 'accent' }, icon('alert')),
-        h('div', null, h('p', null, h('strong', { text: 'Am genauesten bei ' + REP_MIN + '–' + REP_MAX + ' Wiederholungen. ' }),
-          'Gewicht wählen, mit dem du sauber ' + REP_MIN + '–' + REP_MAX + ' Wdh. bis kurz vor Muskelversagen schaffst. Mit Sicherung (Partner oder Ablagen) testen.'))),
-      cards,
-      h('p', { class: 'tiny muted', text: 'Steigerung pro Zyklus: Standard ist +2,5 kg für Bank- und Schulterdrücken und +5 kg für Kniebeuge und Kreuzheben.' }),
-      submit
-    );
+  async function startNewRound() {
+    if (!(await confirmSheet('Neue Runde starten?', S.roundDone
+      ? 'Die nächste Runde beginnt bei Zyklus 1, Woche 1. Trag danach deine neuen Testwerte unter Kraftwerte ein – gern an verschiedenen Tagen. Dein Verlauf bleibt erhalten.'
+      : 'Du bist in Zyklus ' + S.pos.c + '. Eine neue Runde beginnt bei Zyklus 1, Woche 1, alle Maximalkraftwerte stehen wieder auf 0 bis du neu getestet hast. Verlauf und Notizen bleiben erhalten.', 'Neue Runde'))) return;
+    cur().finished = cur().finished || Date.now();
+    const n = S.rounds.length + 1;
+    S.rounds.push(newRound(n));
+    S.round = n; S.pos = { c: 1, w: 0 }; S.roundDone = false;
+    S.skips = Object.fromEntries(LIFTS.map((l) => [l.id, []]));
+    save(); V.wk = null; V.planC = null; V.sub = null; V.tab = 'kraft'; render(true);
+    toast('Runde ' + n + ' gestartet – jetzt Bestwerte eintragen');
   }
 
   // ---------- Woche ----------
   function backupDue() {
-    if (!S.setup || Date.now() < S.backupSnooze) return null;
+    if (Date.now() < S.backupSnooze || !LIFTS.some((l) => hasTest(l.id))) return null;
     if (!S.lastBackup) return Date.now() - S.createdAt > 7 * DAY ? 'Du hast noch kein Backup. Deine Daten liegen nur auf diesem iPhone.' : null;
     const d = daysAgo(S.lastBackup);
     return d >= 28 ? 'Dein letztes Backup ist ' + d + ' Tage alt.' : null;
@@ -361,7 +329,7 @@
         h('span', { class: 'accent' }, icon('trophy')),
         h('h2', { text: 'Runde ' + S.round + ' geschafft!' }),
         h('p', { class: 'muted small', text: '10 Zyklen durchgezogen. Teste jetzt deine neuen Bestwerte – daraus entsteht die nächste Runde. Dein bisheriger Verlauf bleibt erhalten.' }),
-        h('button', { class: 'btn primary block', type: 'button', text: 'Neu testen', onclick: () => openSub('test', { testMode: 'retest', draft: null }) })));
+        h('button', { class: 'btn primary block', type: 'button', text: 'Neue Runde starten', onclick: startNewRound })));
     }
 
     if (isCurrent) {
@@ -374,7 +342,12 @@
     }
     if (vp.w === 4) kids.push(h('div', { class: 'banner' }, h('span', { class: 'accent' }, icon('pause')), h('p', null, h('strong', { text: 'Deload: ' }), '60 % für alle Übungen. Locker bleiben, Technik sauber halten – danach steigen die Gewichte.')));
 
-    if (isCurrent && !LIFTS.some((l) => entry(pos.c, pos.w, l.id).s) && !backupDue() && vp.w !== 4) kids.push(h('p', { class: 'tiny muted', style: { textAlign: 'center', margin: '-4px 0' }, text: 'Übung antippen, um sie als geschafft einzutragen' }));
+    const missing = LIFTS.filter((l) => !hasTest(l.id));
+    if (missing.length) kids.push(h('div', { class: 'banner' }, h('span', { class: 'accent' }, icon('kraft')),
+      h('div', { class: 'grow' }, h('p', null, h('strong', { text: missing.length === 4 ? 'Noch keine Maximalkraft eingetragen. ' : 'Noch offen: ' + missing.map((l) => l.name).join(', ') + '. ' }),
+        'Trag deine Testwerte unter Kraftwerte ein – gern an verschiedenen Tagen.'),
+        h('div', { class: 'actions' }, h('button', { class: 'btn primary small', type: 'button', text: 'Zu Kraftwerte', onclick: () => go('kraft') })))));
+    else if (isCurrent && !LIFTS.some((l) => entry(pos.c, pos.w, l.id).s) && !backupDue() && vp.w !== 4) kids.push(h('p', { class: 'tiny muted', style: { textAlign: 'center', margin: '-4px 0' }, text: 'Übung antippen, um sie als geschafft einzutragen' }));
     LIFTS.forEach((l) => kids.push(liftCard(l, vp)));
 
     if (isCurrent) {
@@ -405,9 +378,8 @@
         h('span', { class: 'col', style: { gap: '3px' } },
           h('span', { class: 'row', style: { alignItems: 'baseline', gap: '12px' } },
             h('span', { class: 'kg' }, fmt(t.kg), h('small', { text: ' kg' })), h('span', { class: 'scheme', text: t.scheme })),
-          h('span', { class: 'tiny muted', text: t.pct + ' % von ' + fmt(t.orm) + ' kg · pro Seite: ' + (pl ? (pl.length ? pl.map(fmt).join(' + ') : 'nur Stange') : 'unter Stangengewicht') }),
           skipped ? h('span', { class: 'tiny', style: { color: 'var(--warn)' }, text: 'Steigerung in diesem Zyklus ausgesetzt' }) : null),
-        miniPlates(pl)));
+        hasTest(l.id) ? miniPlates(pl) : null));
   }
 
   function miniPlates(pl) {
@@ -490,7 +462,10 @@
       ta.value = (ta.value.trim() ? ta.value.trim() + ', ' : '') + q; saveNote(); ta.focus();
     } }));
 
-    const fig = pl ? h('figure', { class: 'card col', style: { margin: '0', gap: '8px' } },
+    const fig = !hasTest(id) ? h('div', { class: 'banner' }, h('span', { class: 'accent' }, icon('kraft')),
+      h('div', { class: 'grow' }, h('p', { text: 'Für ' + l.name + ' ist noch keine Maximalkraft eingetragen. Sobald du getestet hast, stehen hier Gewicht, Scheiben und Aufwärmsätze.' }),
+        h('div', { class: 'actions' }, h('button', { class: 'btn primary small', type: 'button', text: 'Jetzt eintragen', onclick: () => testSheet(id) }))))
+      : pl ? h('figure', { class: 'card col', style: { margin: '0', gap: '8px' } },
       h('div', { class: 'plates big', role: 'img', 'aria-label': pl.length ? 'Pro Seite: ' + pl.map(fmt).join(' + ') + ' kg' : 'Nur die Stange' },
         pl.slice().reverse().map((p) => h('div', { class: 'p', style: { height: PLATE_LOOK[p][1] * 1.25 + 'px', background: PLATE_LOOK[p][0] } })),
         h('div', { class: 'collar' }), h('div', { class: 'shaft' }), h('div', { class: 'collar' }),
@@ -498,14 +473,14 @@
       h('figcaption', { class: 'row between small' }, h('span', { class: 'muted', text: 'Pro Seite' }), h('strong', { text: (pl.length ? pl.map(fmt).join(' + ') + ' kg' : 'keine Scheiben') + ' · Stange 20 kg' })))
       : h('div', { class: 'banner' }, icon('alert'), h('p', { text: 'Das Zielgewicht liegt unter 20 kg – nimm eine leichtere Stange oder Kurzhanteln.' }));
 
-    const warm = warmups(t.kg);
+    const warm = hasTest(id) ? warmups(t.kg) : [];
     return h('main', { class: 'screen' },
       h('button', { class: 'link', type: 'button', style: { alignSelf: 'flex-start' }, onclick: closeSub }, icon('chevL', 'i s'), weekShort(w)),
       h('div', { class: 'col', style: { gap: '2px' } },
         h('span', { class: 'small muted', text: l.name + ' · Zyklus ' + c + ' · ' + weekShort(w) }),
         h('div', { class: 'row', style: { alignItems: 'baseline', gap: '14px' } },
           h('span', { class: 'hero-kg' }, fmt(t.kg), h('small', { text: ' kg' })), h('span', { class: 'scheme', style: { fontSize: '30px' }, text: t.scheme })),
-        h('span', { class: 'small muted', text: t.pct + ' % von ' + fmt(t.orm) + ' kg Maximalkraft' })),
+        h('span', { class: 'small muted', text: hasTest(id) ? t.pct + ' % von ' + fmt(t.orm) + ' kg Maximalkraft' : t.pct + ' % deiner Maximalkraft – noch nicht eingetragen' })),
       fig,
       warm.length ? [h('div', { class: 'label', text: 'Aufwärmen' }),
         h('div', { class: 'warm' }, warm.map(([kg, r]) => h('div', null, h('span', { class: 'num', style: { fontSize: '24px' }, text: kg === BAR ? 'Stange' : fmt(kg) + ' kg' }), h('span', { class: 'muted small', text: '× ' + r }))))] : null,
@@ -561,23 +536,25 @@
   function renderKraft() {
     const r = cur();
     const c = S.pos.c;
+    const n = LIFTS.filter((l) => hasTest(l.id)).length;
     return h('main', { class: 'screen' },
-      h('div', { class: 'col' }, h('h1', { text: 'Kraftwerte' }), h('span', { class: 'small muted', text: 'Runde ' + r.n + ' · getestet am ' + dateDE(r.date) })),
+      h('div', { class: 'col' }, h('h1', { text: 'Kraftwerte' }),
+        h('span', { class: 'small muted', text: 'Runde ' + r.n + ' · ' + (n === 4 ? 'alle Werte eingetragen' : n + ' von 4 eingetragen') + (n ? ' · Werte für Zyklus ' + c : '') })),
+      n < 4 ? h('div', { class: 'banner' }, h('span', { class: 'accent' }, icon('alert')),
+        h('p', null, h('strong', { text: 'Am genauesten bei ' + REP_MIN + '–' + REP_MAX + ' Wiederholungen. ' }), 'Teste jede Übung, wann es passt, und trag sie einzeln ein.')) : null,
       LIFTS.map((l) => {
         const t = r.test[l.id];
         return h('div', { class: 'test-card' },
           h('div', { class: 'row between' }, h('strong', { text: l.name }),
-            h('span', { class: 'row', style: { gap: '6px', alignItems: 'baseline' } }, h('span', { class: 'tiny muted', text: 'Zyklus ' + c }), h('span', { class: 'orm', text: fmt(orm(l.id, c)) + ' kg' }))),
-          h('div', { class: 'row between' },
-            h('span', { class: 'small muted', text: 'Test: ' + fmt(t.kg) + ' kg × ' + t.reps + ' → 1RM ' + fmt(t.orm) + ' kg' }),
-            h('div', { class: 'seg dark', style: { minWidth: '104px' }, role: 'group', 'aria-label': l.name + ': Steigerung pro Zyklus' }, [2.5, 5].map((v) =>
+            h('span', { class: 'orm' + (t ? '' : ' empty'), text: fmt(orm(l.id, c)) + ' kg' })),
+          h('div', { class: 'row between', style: { gap: '8px' } },
+            h('span', { class: 'col', style: { gap: '0', alignItems: 'flex-start' } },
+              t ? h('span', { class: 'tiny muted', text: 'Test: ' + fmt(t.kg) + ' kg × ' + t.reps + (t.date ? ' · ' + new Date(t.date).toLocaleDateString('de-DE', { day: 'numeric', month: 'short' }) : '') }) : null,
+              h('button', { class: 'link', type: 'button', style: { paddingLeft: '0', fontSize: '14px', minHeight: t ? '36px' : '44px' }, text: t ? 'Testwert ändern' : '+ Testwert eintragen', onclick: () => testSheet(l.id) })),
+            h('div', { class: 'seg dark', style: { minWidth: '104px', flex: 'none' }, role: 'group', 'aria-label': l.name + ': Steigerung pro Zyklus' }, [2.5, 5].map((v) =>
               h('button', { type: 'button', 'aria-pressed': String(S.inc[l.id] === v), text: '+' + fmt(v), onclick: () => { S.inc[l.id] = v; save(); render(); } })))));
       }),
-      h('button', { class: 'btn ghost block', type: 'button', onclick: () => openSub('test', { testMode: 'edit', draft: null }) }, 'Testwerte korrigieren'),
-      h('button', { class: 'btn ' + (S.roundDone ? 'primary' : 'ghost') + ' block', type: 'button', onclick: async () => {
-        if (!S.roundDone && !(await confirmSheet('Neu testen?', 'Du bist in Zyklus ' + S.pos.c + '. Mit neuen Testwerten startet eine neue Runde ab Zyklus 1, Woche 1. Dein bisheriger Verlauf und deine Notizen bleiben erhalten.', 'Neu testen'))) return;
-        openSub('test', { testMode: 'retest', draft: null });
-      } }, 'Neu testen & neue Runde starten'),
+      h('button', { class: 'btn ' + (S.roundDone ? 'primary' : 'ghost') + ' block', type: 'button', onclick: startNewRound }, 'Neue Runde starten'),
       h('p', { class: 'tiny muted', text: 'Steigerung = kg pro Zyklus. Formel wie in deiner Tabelle: 1RM = Gewicht + Gewicht × Wdh. × 0,033, gerundet auf 2,5 kg.' }));
   }
 
@@ -632,6 +609,9 @@
         h('span', { class: 'row', style: { gap: '6px' } }, h('span', { class: 'lg-ist' }), 'Ist'),
         h('span', { class: 'row', style: { gap: '6px' } }, h('span', { class: 'lg-now' }), 'jetzt')),
       LIFTS.map((l) => {
+        if (!hasTest(l.id)) return h('section', { class: 'card row between', 'aria-label': l.name },
+          h('span', { class: 'row', style: { gap: '8px' } }, h('span', { class: 'dot', style: { background: l.color } }), h('strong', { text: l.name })),
+          h('button', { class: 'link', type: 'button', style: { fontSize: '14px' }, text: '+ Testwert eintragen', onclick: () => testSheet(l.id) }));
         const ist = istSeries(l.id);
         const planNow = ist.last ? planVal(l.id, ist.last) : planVal(l.id, 1);
         const diff = ist.now - planNow;
@@ -653,8 +633,9 @@
         return h('div', { class: 'list-row', style: { flexDirection: 'column', alignItems: 'stretch', gap: '6px', padding: '12px 0' } },
           h('div', { class: 'row between small' }, h('strong', { text: 'Runde ' + r.n }), h('span', { class: 'muted', text: dateDE(r.date) })),
           h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: '4px' } }, LIFTS.map((l) => {
-            const d = prevR ? r.test[l.id].orm - prevR.test[l.id].orm : null;
-            return h('div', { class: 'col center', style: { gap: '0' } }, h('span', { class: 'tiny muted', text: l.short }), h('span', { class: 'num', style: { fontSize: '20px' }, text: fmt(r.test[l.id].orm) }),
+            const v = r.test[l.id];
+            const d = prevR && v && prevR.test[l.id] ? v.orm - prevR.test[l.id].orm : null;
+            return h('div', { class: 'col center', style: { gap: '0' } }, h('span', { class: 'tiny muted', text: l.short }), h('span', { class: 'num', style: { fontSize: '20px', color: v ? 'var(--text)' : 'var(--dim)' }, text: v ? fmt(v.orm) : '0' }),
               d != null ? h('span', { class: 'tiny', style: { color: d >= 0 ? 'var(--good)' : 'var(--bad)' }, text: (d >= 0 ? '+' : '') + fmt(d) }) : null);
           })));
       })));
@@ -711,7 +692,6 @@
   }
 
   function startBackup() {
-    if (!S.setup) { toast('Noch keine Daten zum Sichern'); return; }
     sheet('Backup verschlüsseln', (close) => {
       const p1 = h('input', { type: 'password', autocomplete: 'new-password', 'aria-label': 'Passwort' });
       const p2 = h('input', { type: 'password', autocomplete: 'new-password', 'aria-label': 'Passwort wiederholen' });
@@ -782,8 +762,8 @@
           catch (e) { err.textContent = 'Passwort falsch oder Datei beschädigt.'; err.hidden = false; go.disabled = false; go.textContent = 'Öffnen'; return; }
           if (!valid(data)) { err.textContent = 'Das Backup enthält keine gültigen Daten.'; err.hidden = false; go.disabled = false; go.textContent = 'Öffnen'; return; }
           close();
-          if (S.setup && !(await confirmSheet('Backup einspielen?', 'Backup vom ' + dateDE(file.created) + '. Deine aktuellen Daten auf diesem Gerät werden ersetzt.', 'Einspielen'))) return;
-          S = data; S.lastActive = Date.now(); save(); requestPersist();
+          if ((LIFTS.some((l) => hasTest(l.id)) || Object.keys(S.log).length) && !(await confirmSheet('Backup einspielen?', 'Backup vom ' + dateDE(file.created) + '. Deine aktuellen Daten auf diesem Gerät werden ersetzt.', 'Einspielen'))) return;
+          S = migrate(data); S.lastActive = Date.now(); save(); requestPersist();
           V.sub = null; V.tab = 'woche'; V.wk = null; V.planC = null; render(true); toast('Backup eingespielt');
         });
         return h('div', { class: 'stack' },

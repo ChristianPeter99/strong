@@ -14,6 +14,7 @@ Kraft-Masse-Kalkulation als Web-App fürs iPhone. Aus vier Bestwerten berechnet 
 4. Nach 1–2 Minuten ist die App erreichbar unter `https://<dein-benutzername>.github.io/kraftzyklus/`.
 5. Die Adresse auf dem iPhone in **Safari** öffnen › **Teilen** › **Zum Home-Bildschirm**.
 6. App einmal vom Home-Bildschirm starten, solange du online bist. Ab dann funktioniert sie offline.
+7. Die App startet mit 0 kg. Unter **Kraftwerte** trägst du jede Übung einzeln ein, sobald du sie getestet hast.
 
 ## Neue Version veröffentlichen
 
